@@ -176,10 +176,32 @@ static BOOL g_bSortAscending = FALSE; // Tri décroissant (processus les plus ac
 static BOOL g_bHideWindowsProcesses = FALSE; // Toggle pour masquer les processus de base Windows
 static BOOL g_bAutoRefresh = TRUE; // Auto-refresh à 1s
 
-// État de la zone de notification (Tray Icon)
+// Identifiants et état des 3 Tray Icons (CPU, RAM, GPU) avec historique
+#define TRAY_ID_CPU 1
+#define TRAY_ID_RAM 2
+#define TRAY_ID_GPU 3
+
+#define TRAY_HISTORY_POINTS 14 // 14 points d'historique temporels (colonnes de pixels x=1 à 14 dans 16x16)
+
+static double g_TrayCpuHistory[TRAY_HISTORY_POINTS] = { 0 };
+static double g_TrayRamHistory[TRAY_HISTORY_POINTS] = { 0 };
+static double g_TrayGpuHistory[TRAY_HISTORY_POINTS] = { 0 };
+static int g_TrayHistoryCount = 0;
+
+static double g_LastCpuPct = 0.0;
+static double g_LastMemPct = 0.0;
+static double g_LastGpuPct = 0.0;
+static double g_LastUsedRamGb = 0.0;
+static double g_LastTotalRamGb = 0.0;
+
 static BOOL g_bInTray = FALSE;
-static BOOL g_bTrayIconCreated = FALSE;
-static HICON g_hCurrentTrayIcon = NULL;
+static BOOL g_bTrayCpuCreated = FALSE;
+static BOOL g_bTrayRamCreated = FALSE;
+static BOOL g_bTrayGpuCreated = FALSE;
+
+static HICON g_hIconCpu = NULL;
+static HICON g_hIconRam = NULL;
+static HICON g_hIconGpu = NULL;
 
 // Variables globales UI
 static HWND g_hMainWnd = NULL;
@@ -233,10 +255,10 @@ BOOL RemoveExcludedProcess(int index);
 void ClearAllExcludedProcesses(void);
 void UpdateExclusionsButtonText(void);
 
-// Gestion de l'icône dynamique dans la barre des tâches (Tray Icon)
-HICON CreateResourceMeterIcon(double cpuPct, double memPct, double gpuPct);
-void UpdateTrayIcon(double cpuPct, double memPct, double gpuPct);
-void RemoveTrayIcon(void);
+// Gestion des 3 icônes dynamiques d'historique dans la barre des tâches (Tray Icons)
+HICON CreateHistoryGraphIcon(const double *history, int count, DWORD baseColor, DWORD peakColor, DWORD alertColor);
+void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb);
+void RemoveAllTrayIcons(void);
 
 // Recherche sous-chaîne insensible à la casse autonome
 static BOOL ContainsSubstringI(const WCHAR *haystack, const WCHAR *needle) {
@@ -371,69 +393,50 @@ void UpdateExclusionsButtonText(void) {
     }
 }
 
-// Création d'une icône 16x16 dynamique 3 couleurs représentant les jauges CPU, RAM et GPU
-HICON CreateResourceMeterIcon(double cpuPct, double memPct, double gpuPct) {
+// Création d'une icône 16x16 affichant l'historique d'utilisation sous forme de sparkline / graphique en barres
+HICON CreateHistoryGraphIcon(const double *history, int count, DWORD baseColor, DWORD peakColor, DWORD alertColor) {
     DWORD pixels[16 * 16];
 
-    // Fond sombre ardoise moderne avec bordure extérieure
+    // Fond sombre ardoise moderne avec bordure extérieure nette
     for (int y = 0; y < 16; y++) {
         for (int x = 0; x < 16; x++) {
             if (x == 0 || x == 15 || y == 0 || y == 15) {
-                pixels[y * 16 + x] = 0xFF1E293B; // Bordure extérieure gris-bleu
+                pixels[y * 16 + x] = 0xFF1E293B; // Bordure extérieure gris-bleu 1px
+            } else if (y == 7) {
+                pixels[y * 16 + x] = 0xFF172235; // Ligne guide médiane 50%
             } else {
-                pixels[y * 16 + x] = 0xFF0F172A; // Fond sombre intérieur
+                pixels[y * 16 + x] = 0xFF0A0F1D; // Fond sombre intérieur
             }
         }
     }
 
-    // Calcul de la hauteur remplie pour chaque jauge (0 à 12 pixels du bas vers le haut)
-    // Hauteur totale utile : y de 2 (haut) à 13 (bas) -> 12 pixels
-    int hCpu = (int)((cpuPct / 100.0) * 12.0 + 0.5);
-    if (hCpu < 1 && cpuPct > 0.1) hCpu = 1;
-    if (hCpu > 12) hCpu = 12;
+    // Rendu des colonnes d'historique (x de 1 à 14 = 14 points temporels)
+    // history[0] = point le plus ancien (14s), history[13] = point le plus récent (actuel)
+    for (int col = 0; col < 14; col++) {
+        int x = 1 + col;
+        double val = (col < count) ? history[col] : 0.0;
+        if (val < 0.0) val = 0.0;
+        if (val > 100.0) val = 100.0;
 
-    int hMem = (int)((memPct / 100.0) * 12.0 + 0.5);
-    if (hMem < 1 && memPct > 0.1) hMem = 1;
-    if (hMem > 12) hMem = 12;
+        // Hauteur de la barre : de 0 à 13 pixels (y de 14 bas jusqu'à 1 haut)
+        int h = (int)((val / 100.0) * 13.0 + 0.5);
+        if (val > 0.1 && h == 0) h = 1; // Au moins 1 pixel si activité détectée
+        if (h > 13) h = 13;
 
-    int hGpu = (int)((gpuPct / 100.0) * 12.0 + 0.5);
-    if (hGpu < 1 && gpuPct > 0.1) hGpu = 1;
-    if (hGpu > 12) hGpu = 12;
+        DWORD colBase = (val > 80.0) ? alertColor : baseColor;
+        DWORD colPeak = (val > 80.0) ? 0xFFFCA5A5 : peakColor;
 
-    // Couleurs dynamiques selon la charge pour les 3 jauges (3 couleurs distinctives)
-    // 1. CPU : Vert émeraude (#10B981) -> Orange si élevé -> Rouge si critique
-    DWORD colorCpu = (cpuPct > 80.0) ? 0xFFEF4444 : ((cpuPct > 45.0) ? 0xFFF59E0B : 0xFF10B981);
-
-    // 2. RAM / Mémoire : Violet vif (#8B5CF6) -> Orange si élevé -> Rouge si critique
-    DWORD colorMem = (memPct > 85.0) ? 0xFFEF4444 : ((memPct > 65.0) ? 0xFFF59E0B : 0xFF8B5CF6);
-
-    // 3. GPU : Cyan / Bleu ciel (#06B6D4) -> Orange si élevé -> Rouge si critique
-    DWORD colorGpu = (gpuPct > 80.0) ? 0xFFEF4444 : ((gpuPct > 40.0) ? 0xFFF59E0B : 0xFF06B6D4);
-
-    // Dessin des 3 colonnes verticales dans l'icône 16x16
-    // Colonne 1 (CPU) : X = 2, 3, 4
-    // Colonne 2 (RAM) : X = 6, 7, 8
-    // Colonne 3 (GPU) : X = 10, 11, 12
-    for (int y = 2; y <= 13; y++) {
-        int fromBottom = 13 - y; // 0 tout en bas, 11 tout en haut
-
-        // Jauge 1 : CPU
-        for (int x = 2; x <= 4; x++) {
-            pixels[y * 16 + x] = (fromBottom < hCpu) ? colorCpu : 0xFF1E293B;
-        }
-
-        // Jauge 2 : RAM
-        for (int x = 6; x <= 8; x++) {
-            pixels[y * 16 + x] = (fromBottom < hMem) ? colorMem : 0xFF1E293B;
-        }
-
-        // Jauge 3 : GPU
-        for (int x = 10; x <= 12; x++) {
-            pixels[y * 16 + x] = (fromBottom < hGpu) ? colorGpu : 0xFF1E293B;
+        for (int fromBottom = 0; fromBottom < h; fromBottom++) {
+            int y = 14 - fromBottom;
+            if (fromBottom == h - 1) {
+                pixels[y * 16 + x] = colPeak; // Ligne supérieure lumineuse
+            } else {
+                pixels[y * 16 + x] = colBase; // Corps de la barre d'historique
+            }
         }
     }
 
-    // Masque AND 1-bit (32 octets = 16 lignes de 2 octets)
+    // Masque AND 1-bit monochrome (32 octets = 16 lignes de 2 octets)
     BYTE andMask[16 * 2] = { 0 };
 
     HBITMAP hbmColor = CreateBitmap(16, 16, 1, 32, pixels);
@@ -460,54 +463,144 @@ HICON CreateResourceMeterIcon(double cpuPct, double memPct, double gpuPct) {
     return hIcon;
 }
 
-// Mise à jour de l'icône dans la zone de notification (Tray Icon)
-void UpdateTrayIcon(double cpuPct, double memPct, double gpuPct) {
+// Mise à jour des 3 icônes distinctes d'historique (CPU, RAM, GPU) dans la barre des tâches
+void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb) {
     if (!g_hMainWnd) return;
 
-    HICON hNewIcon = CreateResourceMeterIcon(cpuPct, memPct, gpuPct);
-    if (!hNewIcon) return;
+    g_LastCpuPct = cpuPct;
+    g_LastMemPct = memPct;
+    g_LastGpuPct = gpuPct;
+    g_LastUsedRamGb = usedRamGb;
+    g_LastTotalRamGb = totalRamGb;
 
-    NOTIFYICONDATAW nid;
-    memset(&nid, 0, sizeof(NOTIFYICONDATAW));
-    nid.cbSize = sizeof(NOTIFYICONDATAW);
-    nid.hWnd = g_hMainWnd;
-    nid.uID = 1;
-    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-    nid.uCallbackMessage = WM_TRAYICON;
-    nid.hIcon = hNewIcon;
-
-    swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
-        L"Task Manager\nCPU: %.1f%% (Vert)\nRAM: %.0f%% (Violet)\nGPU: %.1f%% (Cyan)\nDouble-clic pour restaurer",
-        cpuPct, memPct, gpuPct);
-
-    if (!g_bTrayIconCreated) {
-        if (Shell_NotifyIconW(NIM_ADD, &nid)) {
-            g_bTrayIconCreated = TRUE;
+    // Décalage de l'historique vers la gauche et ajout du nouvel échantillon
+    if (g_TrayHistoryCount == 0) {
+        for (int i = 0; i < TRAY_HISTORY_POINTS; i++) {
+            g_TrayCpuHistory[i] = cpuPct;
+            g_TrayRamHistory[i] = memPct;
+            g_TrayGpuHistory[i] = gpuPct;
         }
+        g_TrayHistoryCount = TRAY_HISTORY_POINTS;
     } else {
-        Shell_NotifyIconW(NIM_MODIFY, &nid);
+        for (int i = 0; i < TRAY_HISTORY_POINTS - 1; i++) {
+            g_TrayCpuHistory[i] = g_TrayCpuHistory[i + 1];
+            g_TrayRamHistory[i] = g_TrayRamHistory[i + 1];
+            g_TrayGpuHistory[i] = g_TrayGpuHistory[i + 1];
+        }
+        g_TrayCpuHistory[TRAY_HISTORY_POINTS - 1] = cpuPct;
+        g_TrayRamHistory[TRAY_HISTORY_POINTS - 1] = memPct;
+        g_TrayGpuHistory[TRAY_HISTORY_POINTS - 1] = gpuPct;
     }
 
-    if (g_hCurrentTrayIcon) {
-        DestroyIcon(g_hCurrentTrayIcon);
-    }
-    g_hCurrentTrayIcon = hNewIcon;
-}
-
-// Suppression propre de l'icône de la barre des tâches
-void RemoveTrayIcon(void) {
-    if (g_bTrayIconCreated) {
+    // 1. Icône CPU : Vert émeraude (Base: #10B981, Pic: #34D399, Alerte: #EF4444)
+    HICON hNewCpu = CreateHistoryGraphIcon(g_TrayCpuHistory, TRAY_HISTORY_POINTS, 0xFF10B981, 0xFF34D399, 0xFFEF4444);
+    if (hNewCpu) {
         NOTIFYICONDATAW nid;
         memset(&nid, 0, sizeof(NOTIFYICONDATAW));
         nid.cbSize = sizeof(NOTIFYICONDATAW);
         nid.hWnd = g_hMainWnd;
-        nid.uID = 1;
-        Shell_NotifyIconW(NIM_DELETE, &nid);
-        g_bTrayIconCreated = FALSE;
+        nid.uID = TRAY_ID_CPU;
+        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        nid.uCallbackMessage = WM_TRAYICON;
+        nid.hIcon = hNewCpu;
+        swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
+            L"CPU : %.1f %%\nHistorique (14s) [Vert]\nDouble-clic pour restaurer", cpuPct);
+
+        if (!g_bTrayCpuCreated) {
+            if (Shell_NotifyIconW(NIM_ADD, &nid)) g_bTrayCpuCreated = TRUE;
+        } else {
+            Shell_NotifyIconW(NIM_MODIFY, &nid);
+        }
+
+        if (g_hIconCpu) DestroyIcon(g_hIconCpu);
+        g_hIconCpu = hNewCpu;
     }
-    if (g_hCurrentTrayIcon) {
-        DestroyIcon(g_hCurrentTrayIcon);
-        g_hCurrentTrayIcon = NULL;
+
+    // 2. Icône RAM : Violet vif (Base: #8B5CF6, Pic: #A78BFA, Alerte: #EF4444)
+    HICON hNewRam = CreateHistoryGraphIcon(g_TrayRamHistory, TRAY_HISTORY_POINTS, 0xFF8B5CF6, 0xFFA78BFA, 0xFFEF4444);
+    if (hNewRam) {
+        NOTIFYICONDATAW nid;
+        memset(&nid, 0, sizeof(NOTIFYICONDATAW));
+        nid.cbSize = sizeof(NOTIFYICONDATAW);
+        nid.hWnd = g_hMainWnd;
+        nid.uID = TRAY_ID_RAM;
+        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        nid.uCallbackMessage = WM_TRAYICON;
+        nid.hIcon = hNewRam;
+        swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
+            L"RAM : %.1f %% (%.1f / %.1f Go)\nHistorique (14s) [Violet]\nDouble-clic pour restaurer",
+            memPct, usedRamGb, totalRamGb);
+
+        if (!g_bTrayRamCreated) {
+            if (Shell_NotifyIconW(NIM_ADD, &nid)) g_bTrayRamCreated = TRUE;
+        } else {
+            Shell_NotifyIconW(NIM_MODIFY, &nid);
+        }
+
+        if (g_hIconRam) DestroyIcon(g_hIconRam);
+        g_hIconRam = hNewRam;
+    }
+
+    // 3. Icône GPU : Cyan électrique (Base: #06B6D4, Pic: #67E8F9, Alerte: #EF4444)
+    HICON hNewGpu = CreateHistoryGraphIcon(g_TrayGpuHistory, TRAY_HISTORY_POINTS, 0xFF06B6D4, 0xFF67E8F9, 0xFFEF4444);
+    if (hNewGpu) {
+        NOTIFYICONDATAW nid;
+        memset(&nid, 0, sizeof(NOTIFYICONDATAW));
+        nid.cbSize = sizeof(NOTIFYICONDATAW);
+        nid.hWnd = g_hMainWnd;
+        nid.uID = TRAY_ID_GPU;
+        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+        nid.uCallbackMessage = WM_TRAYICON;
+        nid.hIcon = hNewGpu;
+        swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
+            L"GPU : %.1f %%\nHistorique (14s) [Cyan]\nDouble-clic pour restaurer", gpuPct);
+
+        if (!g_bTrayGpuCreated) {
+            if (Shell_NotifyIconW(NIM_ADD, &nid)) g_bTrayGpuCreated = TRUE;
+        } else {
+            Shell_NotifyIconW(NIM_MODIFY, &nid);
+        }
+
+        if (g_hIconGpu) DestroyIcon(g_hIconGpu);
+        g_hIconGpu = hNewGpu;
+    }
+}
+
+// Suppression propre des 3 icônes de la barre des tâches
+void RemoveAllTrayIcons(void) {
+    NOTIFYICONDATAW nid;
+    memset(&nid, 0, sizeof(NOTIFYICONDATAW));
+    nid.cbSize = sizeof(NOTIFYICONDATAW);
+    nid.hWnd = g_hMainWnd;
+
+    if (g_bTrayCpuCreated) {
+        nid.uID = TRAY_ID_CPU;
+        Shell_NotifyIconW(NIM_DELETE, &nid);
+        g_bTrayCpuCreated = FALSE;
+    }
+    if (g_hIconCpu) {
+        DestroyIcon(g_hIconCpu);
+        g_hIconCpu = NULL;
+    }
+
+    if (g_bTrayRamCreated) {
+        nid.uID = TRAY_ID_RAM;
+        Shell_NotifyIconW(NIM_DELETE, &nid);
+        g_bTrayRamCreated = FALSE;
+    }
+    if (g_hIconRam) {
+        DestroyIcon(g_hIconRam);
+        g_hIconRam = NULL;
+    }
+
+    if (g_bTrayGpuCreated) {
+        nid.uID = TRAY_ID_GPU;
+        Shell_NotifyIconW(NIM_DELETE, &nid);
+        g_bTrayGpuCreated = FALSE;
+    }
+    if (g_hIconGpu) {
+        DestroyIcon(g_hIconGpu);
+        g_hIconGpu = NULL;
     }
 }
 
@@ -862,16 +955,30 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         return 0;
 
     case WM_TRAYICON: {
-        // Double-clic gauche pour réafficher l'application
+        UINT uTrayId = (UINT)wParam;
+        // Double-clic gauche sur n'importe laquelle des 3 icônes pour réafficher l'application
         if (lParam == WM_LBUTTONDBLCLK) {
             ShowWindow(hWnd, SW_RESTORE);
             SetForegroundWindow(hWnd);
             g_bInTray = FALSE;
         } else if (lParam == WM_RBUTTONUP) {
-            // Clic droit pour menu contextuel du Tray
+            // Clic droit pour menu contextuel du Tray avec détails de la ressource cliquée
             POINT pt;
             GetCursorPos(&pt);
             HMENU hTrayMenu = CreatePopupMenu();
+
+            WCHAR szHeader[128];
+            if (uTrayId == TRAY_ID_CPU) {
+                swprintf_s(szHeader, sizeof(szHeader) / sizeof(WCHAR), L"Historique CPU : %.1f %%", g_LastCpuPct);
+            } else if (uTrayId == TRAY_ID_RAM) {
+                swprintf_s(szHeader, sizeof(szHeader) / sizeof(WCHAR), L"Historique RAM : %.1f %% (%.1f / %.1f Go)",
+                    g_LastMemPct, g_LastUsedRamGb, g_LastTotalRamGb);
+            } else {
+                swprintf_s(szHeader, sizeof(szHeader) / sizeof(WCHAR), L"Historique GPU : %.1f %%", g_LastGpuPct);
+            }
+
+            AppendMenuW(hTrayMenu, MF_STRING | MF_GRAYED, 0, szHeader);
+            AppendMenuW(hTrayMenu, MF_SEPARATOR, 0, NULL);
             AppendMenuW(hTrayMenu, MF_STRING, IDM_TRAY_OPEN, L"Ouvrir le Task Manager");
             SetMenuDefaultItem(hTrayMenu, IDM_TRAY_OPEN, FALSE);
             AppendMenuW(hTrayMenu, MF_SEPARATOR, 0, NULL);
@@ -896,7 +1003,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             break;
 
         case IDM_TRAY_EXIT:
-            RemoveTrayIcon();
+            RemoveAllTrayIcons();
             DestroyWindow(hWnd);
             break;
 
@@ -1167,7 +1274,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     }
 
     case WM_DESTROY:
-        RemoveTrayIcon();
+        RemoveAllTrayIcons();
         SaveSettings();
         if (g_bAutoRefresh) {
             KillTimer(hWnd, IDT_REFRESH_TIMER);
@@ -1558,12 +1665,16 @@ void RefreshProcessList(void) {
     MEMORYSTATUSEX memStatus;
     memStatus.dwLength = sizeof(MEMORYSTATUSEX);
     double memPercent = 0.0;
+    double usedRamGb = 0.0;
+    double totalRamGb = 0.0;
     if (GlobalMemoryStatusEx(&memStatus)) {
         memPercent = (double)memStatus.dwMemoryLoad;
+        usedRamGb = (double)(memStatus.ullTotalPhys - memStatus.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0);
+        totalRamGb = (double)memStatus.ullTotalPhys / (1024.0 * 1024.0 * 1024.0);
     }
 
-    // Mise à jour de l'icône Tray 3 couleurs
-    UpdateTrayIcon(totalCpuPercent, memPercent, totalGpuPercent);
+    // Mise à jour des 3 icônes d'historique (CPU, RAM, GPU) dans la barre des tâches
+    UpdateTrayIcons(totalCpuPercent, memPercent, totalGpuPercent, usedRamGb, totalRamGb);
 
     // 2. Filtrage dans la liste tampon (Recherche + Toggle processus Windows + Exclusions par nom)
     g_FilteredCount = 0;

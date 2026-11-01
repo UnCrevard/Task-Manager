@@ -63,7 +63,10 @@ export default function App() {
   const [isAutoRefresh, setIsAutoRefresh] = useState<boolean>(true);
   const [hideWindows, setHideWindows] = useState<boolean>(false);
   const [isMinimizedToTray, setIsMinimizedToTray] = useState<boolean>(false);
-  const [trayMenu, setTrayMenu] = useState<{ x: number; y: number } | null>(null);
+  const [trayMenu, setTrayMenu] = useState<{ x: number; y: number; type: 'cpu' | 'ram' | 'gpu' } | null>(null);
+  const [cpuHistory, setCpuHistory] = useState<number[]>([12, 14, 18, 15, 22, 19, 14, 16, 25, 20, 18, 22, 15, 17]);
+  const [ramHistory, setRamHistory] = useState<number[]>([58, 58, 59, 59, 60, 60, 61, 61, 62, 62, 62, 63, 63, 63]);
+  const [gpuHistory, setGpuHistory] = useState<number[]>([4, 6, 8, 5, 12, 7, 4, 6, 9, 5, 8, 11, 6, 5]);
   const [excludedProcesses, setExcludedProcesses] = useState<string[]>([]);
   const [showExclusionsMenu, setShowExclusionsMenu] = useState<boolean>(false);
   const [searchFilter, setSearchFilter] = useState<string>('');
@@ -76,8 +79,8 @@ export default function App() {
   useEffect(() => {
     if (!isAutoRefresh) return;
     const interval = setInterval(() => {
-      setProcesses((prev) =>
-        prev.map((p) => {
+      setProcesses((prev) => {
+        const next = prev.map((p) => {
           if (p.isSystem) return p;
           const cpuDelta = (Math.random() - 0.5) * 1.5;
           const newCpu = Math.max(0.0, Math.min(99.0, Number((p.cpu + cpuDelta).toFixed(1))));
@@ -91,8 +94,19 @@ export default function App() {
             diskMB: newDisk,
             netKB: newNet,
           };
-        })
-      );
+        });
+
+        const cTotal = Math.min(100, Number(next.reduce((acc, p) => acc + p.cpu, 0).toFixed(1)));
+        const rTotalMB = next.reduce((acc, p) => acc + p.ramMB, 0);
+        const rPercent = Math.min(100, Math.round((rTotalMB / 16384) * 100));
+        const gTotal = Math.min(100, Number(next.reduce((acc, p) => acc + p.gpu, 0).toFixed(1)));
+
+        setCpuHistory((h) => [...h.slice(1), cTotal]);
+        setRamHistory((h) => [...h.slice(1), rPercent]);
+        setGpuHistory((h) => [...h.slice(1), gTotal]);
+
+        return next;
+      });
     }, 1000);
 
     return () => clearInterval(interval);
@@ -429,20 +443,103 @@ export default function App() {
                   </div>
 
                   <div className="grid grid-cols-3 gap-2 text-xs font-mono py-1">
-                    <div className="bg-slate-950 p-2 rounded border border-slate-800 text-center">
-                      <div className="text-[10px] text-slate-500 uppercase">1. CPU</div>
-                      <div className="text-emerald-400 font-bold">{totalCpu.toFixed(1)} %</div>
-                      <div className="text-[10px] text-slate-400">Vert</div>
+                    <div
+                      onDoubleClick={() => {
+                        setIsMinimizedToTray(false);
+                        showToast("Task Manager restauré (Double-clic)");
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setTrayMenu({ x: e.clientX, y: e.clientY, type: 'cpu' });
+                      }}
+                      className="bg-slate-950 p-2.5 rounded border border-slate-800 hover:border-emerald-500/50 cursor-pointer transition-all text-center group"
+                      title="Icône Tray 1 : CPU (Vert) - Double-clic pour restaurer"
+                    >
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 uppercase pb-1 border-b border-slate-850">
+                        <span>1. Tray CPU</span>
+                        <span className="text-emerald-400 font-bold">{totalCpu.toFixed(1)} %</span>
+                      </div>
+                      <div className="h-6 bg-[#0a0f1d] border border-[#1e293b] rounded mt-1.5 p-[1px] flex items-end justify-between gap-[1px] overflow-hidden">
+                        {cpuHistory.slice(-14).map((val, i) => (
+                          <div key={i} className="flex-1 h-full flex items-end">
+                            <div
+                              style={{
+                                height: `${Math.max(val > 0 ? 8 : 0, Math.min(100, val))}%`,
+                                backgroundColor: val > 80 ? '#ef4444' : val > 45 ? '#f59e0b' : '#10b981'
+                              }}
+                              className="w-full transition-all duration-300"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-1">Historique 14s (Vert)</div>
                     </div>
-                    <div className="bg-slate-950 p-2 rounded border border-slate-800 text-center">
-                      <div className="text-[10px] text-slate-500 uppercase">2. RAM</div>
-                      <div className="text-purple-400 font-bold">{ramPercent} %</div>
-                      <div className="text-[10px] text-slate-400">Violet</div>
+
+                    <div
+                      onDoubleClick={() => {
+                        setIsMinimizedToTray(false);
+                        showToast("Task Manager restauré (Double-clic)");
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setTrayMenu({ x: e.clientX, y: e.clientY, type: 'ram' });
+                      }}
+                      className="bg-slate-950 p-2.5 rounded border border-slate-800 hover:border-purple-500/50 cursor-pointer transition-all text-center group"
+                      title="Icône Tray 2 : RAM (Violet) - Double-clic pour restaurer"
+                    >
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 uppercase pb-1 border-b border-slate-850">
+                        <span>2. Tray RAM</span>
+                        <span className="text-purple-400 font-bold">{ramPercent} %</span>
+                      </div>
+                      <div className="h-6 bg-[#0a0f1d] border border-[#1e293b] rounded mt-1.5 p-[1px] flex items-end justify-between gap-[1px] overflow-hidden">
+                        {ramHistory.slice(-14).map((val, i) => (
+                          <div key={i} className="flex-1 h-full flex items-end">
+                            <div
+                              style={{
+                                height: `${Math.max(val > 0 ? 8 : 0, Math.min(100, val))}%`,
+                                backgroundColor: val > 85 ? '#ef4444' : val > 65 ? '#f59e0b' : '#8b5cf6'
+                              }}
+                              className="w-full transition-all duration-300"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-1">Historique 14s (Violet)</div>
                     </div>
-                    <div className="bg-slate-950 p-2 rounded border border-slate-800 text-center">
-                      <div className="text-[10px] text-slate-500 uppercase">3. GPU</div>
-                      <div className="text-cyan-400 font-bold">{totalGpu.toFixed(1)} %</div>
-                      <div className="text-[10px] text-slate-400">Cyan</div>
+
+                    <div
+                      onDoubleClick={() => {
+                        setIsMinimizedToTray(false);
+                        showToast("Task Manager restauré (Double-clic)");
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setTrayMenu({ x: e.clientX, y: e.clientY, type: 'gpu' });
+                      }}
+                      className="bg-slate-950 p-2.5 rounded border border-slate-800 hover:border-cyan-500/50 cursor-pointer transition-all text-center group"
+                      title="Icône Tray 3 : GPU (Cyan) - Double-clic pour restaurer"
+                    >
+                      <div className="flex items-center justify-between text-[10px] text-slate-500 uppercase pb-1 border-b border-slate-850">
+                        <span>3. Tray GPU</span>
+                        <span className="text-cyan-400 font-bold">{totalGpu.toFixed(1)} %</span>
+                      </div>
+                      <div className="h-6 bg-[#0a0f1d] border border-[#1e293b] rounded mt-1.5 p-[1px] flex items-end justify-between gap-[1px] overflow-hidden">
+                        {gpuHistory.slice(-14).map((val, i) => (
+                          <div key={i} className="flex-1 h-full flex items-end">
+                            <div
+                              style={{
+                                height: `${Math.max(val > 0 ? 8 : 0, Math.min(100, val))}%`,
+                                backgroundColor: val > 80 ? '#ef4444' : val > 40 ? '#f59e0b' : '#06b6d4'
+                              }}
+                              className="w-full transition-all duration-300"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <div className="text-[10px] text-slate-400 mt-1">Historique 14s (Cyan)</div>
                     </div>
                   </div>
 
@@ -453,12 +550,12 @@ export default function App() {
                     }}
                     className="w-full py-2 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs font-medium transition-colors shadow cursor-pointer flex items-center justify-center gap-2"
                   >
-                    <span>Restaurer la fenêtre (Double-clic)</span>
+                    <span>Restaurer la fenêtre (Double-cliquez sur n'importe quel icône)</span>
                   </button>
                 </div>
 
                 {/* Simulation de la barre des tâches Windows 10/11 en bas */}
-                <div className="h-11 bg-slate-900/95 border border-slate-700/80 rounded-lg px-4 flex items-center justify-between shadow-2xl">
+                <div className="h-12 bg-slate-900/95 border border-slate-700/80 rounded-lg px-4 flex items-center justify-between shadow-2xl">
                   <div className="flex items-center gap-3 text-xs text-slate-400 font-medium">
                     <div className="w-5 h-5 rounded bg-blue-600 flex items-center justify-center text-white text-[11px] font-bold">
                       ⊞
@@ -466,61 +563,103 @@ export default function App() {
                     <span className="text-[11px] text-slate-500 hidden sm:inline">Windows Taskbar Simulation</span>
                   </div>
 
-                  {/* Zone de notification (System Tray) avec icône 3 couleurs */}
-                  <div className="flex items-center gap-3 bg-slate-950/80 border border-slate-800 px-3 py-1 rounded">
+                  {/* Zone de notification (System Tray) avec les 3 icônes d'historique */}
+                  <div className="flex items-center gap-2 bg-slate-950/80 border border-slate-800 px-3 py-1 rounded">
                     <div className="text-[11px] text-slate-400 font-mono hidden md:inline">
-                      Tray Icon :
+                      Tray Icons (3) :
                     </div>
 
-                    {/* L'icône dynamique 3 couleurs */}
+                    {/* Icône 1 : CPU */}
                     <div
                       onDoubleClick={() => {
                         setIsMinimizedToTray(false);
-                        showToast("Task Manager restauré (Double-clic)");
+                        showToast("Task Manager restauré (Double-clic CPU)");
                       }}
                       onContextMenu={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        setTrayMenu({ x: e.clientX, y: e.clientY });
+                        setTrayMenu({ x: e.clientX, y: e.clientY, type: 'cpu' });
                       }}
-                      className="w-7 h-7 bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-blue-400 rounded flex items-center justify-center p-1 cursor-pointer transition-all shadow-inner relative group"
-                      title={`Task Manager (C Win32)\nCPU: ${totalCpu.toFixed(1)}% (Vert)\nRAM: ${ramPercent}% (Violet)\nGPU: ${totalGpu.toFixed(1)}% (Cyan)\nDouble-cliquez pour ouvrir`}
+                      className="flex items-center gap-1 px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-emerald-400 cursor-pointer transition-all shadow-inner relative group"
+                      title={`Task Manager - CPU: ${totalCpu.toFixed(1)}%\nHistorique (14s) [Vert]\nDouble-cliquez pour ouvrir`}
                     >
-                      <div className="w-5 h-5 bg-[#0f172a] border border-[#1e293b] rounded-sm p-0.5 flex items-end justify-between gap-0.5">
-                        {/* Jauge 1 : CPU */}
-                        <div className="w-1 bg-slate-800 h-full rounded-[1px] flex items-end">
-                          <div
-                            style={{
-                              height: `${Math.max(10, Math.min(100, totalCpu))}%`,
-                              backgroundColor: totalCpu > 80 ? '#ef4444' : totalCpu > 45 ? '#f59e0b' : '#10b981'
-                            }}
-                            className="w-full rounded-[1px] transition-all duration-300"
-                          ></div>
-                        </div>
-                        {/* Jauge 2 : RAM */}
-                        <div className="w-1 bg-slate-800 h-full rounded-[1px] flex items-end">
-                          <div
-                            style={{
-                              height: `${Math.max(10, Math.min(100, ramPercent))}%`,
-                              backgroundColor: ramPercent > 85 ? '#ef4444' : ramPercent > 65 ? '#f59e0b' : '#8b5cf6'
-                            }}
-                            className="w-full rounded-[1px] transition-all duration-300"
-                          ></div>
-                        </div>
-                        {/* Jauge 3 : GPU */}
-                        <div className="w-1 bg-slate-800 h-full rounded-[1px] flex items-end">
-                          <div
-                            style={{
-                              height: `${Math.max(10, Math.min(100, totalGpu))}%`,
-                              backgroundColor: totalGpu > 80 ? '#ef4444' : totalGpu > 40 ? '#f59e0b' : '#06b6d4'
-                            }}
-                            className="w-full rounded-[1px] transition-all duration-300"
-                          ></div>
-                        </div>
+                      <div className="w-4 h-4 bg-[#0a0f1d] border border-[#1e293b] rounded-sm p-[1px] flex items-end justify-between gap-[0.5px] overflow-hidden">
+                        {cpuHistory.slice(-14).map((val, i) => (
+                          <div key={i} className="flex-1 h-full flex items-end">
+                            <div
+                              style={{
+                                height: `${Math.max(val > 0 ? 8 : 0, Math.min(100, val))}%`,
+                                backgroundColor: val > 80 ? '#ef4444' : val > 45 ? '#f59e0b' : '#10b981'
+                              }}
+                              className="w-full transition-all duration-300"
+                            />
+                          </div>
+                        ))}
                       </div>
+                      <span className="text-[10px] font-mono text-emerald-400 font-bold">{Math.round(totalCpu)}%</span>
                     </div>
 
-                    <div className="text-[11px] font-mono text-slate-300 pl-1 border-l border-slate-800">
+                    {/* Icône 2 : RAM */}
+                    <div
+                      onDoubleClick={() => {
+                        setIsMinimizedToTray(false);
+                        showToast("Task Manager restauré (Double-clic RAM)");
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setTrayMenu({ x: e.clientX, y: e.clientY, type: 'ram' });
+                      }}
+                      className="flex items-center gap-1 px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-purple-400 cursor-pointer transition-all shadow-inner relative group"
+                      title={`Task Manager - RAM: ${ramPercent}%\nHistorique (14s) [Violet]\nDouble-cliquez pour ouvrir`}
+                    >
+                      <div className="w-4 h-4 bg-[#0a0f1d] border border-[#1e293b] rounded-sm p-[1px] flex items-end justify-between gap-[0.5px] overflow-hidden">
+                        {ramHistory.slice(-14).map((val, i) => (
+                          <div key={i} className="flex-1 h-full flex items-end">
+                            <div
+                              style={{
+                                height: `${Math.max(val > 0 ? 8 : 0, Math.min(100, val))}%`,
+                                backgroundColor: val > 85 ? '#ef4444' : val > 65 ? '#f59e0b' : '#8b5cf6'
+                              }}
+                              className="w-full transition-all duration-300"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <span className="text-[10px] font-mono text-purple-400 font-bold">{ramPercent}%</span>
+                    </div>
+
+                    {/* Icône 3 : GPU */}
+                    <div
+                      onDoubleClick={() => {
+                        setIsMinimizedToTray(false);
+                        showToast("Task Manager restauré (Double-clic GPU)");
+                      }}
+                      onContextMenu={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setTrayMenu({ x: e.clientX, y: e.clientY, type: 'gpu' });
+                      }}
+                      className="flex items-center gap-1 px-1.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 hover:border-cyan-400 cursor-pointer transition-all shadow-inner relative group"
+                      title={`Task Manager - GPU: ${totalGpu.toFixed(1)}%\nHistorique (14s) [Cyan]\nDouble-cliquez pour ouvrir`}
+                    >
+                      <div className="w-4 h-4 bg-[#0a0f1d] border border-[#1e293b] rounded-sm p-[1px] flex items-end justify-between gap-[0.5px] overflow-hidden">
+                        {gpuHistory.slice(-14).map((val, i) => (
+                          <div key={i} className="flex-1 h-full flex items-end">
+                            <div
+                              style={{
+                                height: `${Math.max(val > 0 ? 8 : 0, Math.min(100, val))}%`,
+                                backgroundColor: val > 80 ? '#ef4444' : val > 40 ? '#f59e0b' : '#06b6d4'
+                              }}
+                              className="w-full transition-all duration-300"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      <span className="text-[10px] font-mono text-cyan-400 font-bold">{Math.round(totalGpu)}%</span>
+                    </div>
+
+                    <div className="text-[11px] font-mono text-slate-300 pl-1.5 border-l border-slate-800">
                       {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                     </div>
                   </div>
@@ -998,48 +1137,71 @@ export default function App() {
                     </span>
                   </div>
 
-                  {/* Aperçu direct de l'icône Tray 3 couleurs dans la status bar */}
-                  <div className="flex items-center gap-3">
+                  {/* Aperçu direct des 3 icônes Tray (CPU, RAM, GPU) avec historique */}
+                  <div className="flex items-center gap-2">
                     <span className="text-[11px] text-slate-500 hidden sm:inline">
-                      Fermer = Réduire en Tray
+                      Fermer = 3 Tray Icons :
                     </span>
                     <div
                       onClick={() => {
                         setIsMinimizedToTray(true);
-                        showToast("Application réduite en barre des tâches (Tray Icon)");
+                        showToast("Application réduite en barre des tâches (3 Tray Icons avec historique)");
                       }}
                       className="flex items-center gap-1.5 px-2 py-0.5 rounded bg-slate-950 border border-slate-800 hover:border-blue-500 cursor-pointer"
-                      title="Cliquez pour tester la réduction en System Tray"
+                      title="Cliquez pour tester la réduction en System Tray (3 icônes d'historique distinctes)"
                     >
-                      <span className="text-[10px] text-slate-400">Tray :</span>
-                      <div className="w-4 h-4 bg-[#0f172a] border border-[#1e293b] rounded-sm p-0.5 flex items-end justify-between gap-0.5">
-                        <div className="w-0.5 bg-slate-800 h-full flex items-end">
-                          <div
-                            style={{
-                              height: `${Math.max(10, Math.min(100, totalCpu))}%`,
-                              backgroundColor: totalCpu > 80 ? '#ef4444' : totalCpu > 45 ? '#f59e0b' : '#10b981'
-                            }}
-                            className="w-full"
-                          ></div>
+                      {/* 1. CPU */}
+                      <div className="flex items-center gap-1" title={`CPU: ${totalCpu.toFixed(1)}%`}>
+                        <div className="w-3.5 h-3.5 bg-[#0a0f1d] border border-[#1e293b] rounded-sm p-[1px] flex items-end justify-between gap-[0.5px]">
+                          {cpuHistory.slice(-8).map((val, i) => (
+                            <div key={i} className="flex-1 h-full flex items-end">
+                              <div
+                                style={{
+                                  height: `${Math.max(val > 0 ? 10 : 0, Math.min(100, val))}%`,
+                                  backgroundColor: val > 80 ? '#ef4444' : val > 45 ? '#f59e0b' : '#10b981'
+                                }}
+                                className="w-full"
+                              />
+                            </div>
+                          ))}
                         </div>
-                        <div className="w-0.5 bg-slate-800 h-full flex items-end">
-                          <div
-                            style={{
-                              height: `${Math.max(10, Math.min(100, ramPercent))}%`,
-                              backgroundColor: ramPercent > 85 ? '#ef4444' : ramPercent > 65 ? '#f59e0b' : '#8b5cf6'
-                            }}
-                            className="w-full"
-                          ></div>
+                        <span className="text-[9px] text-emerald-400 font-bold">{Math.round(totalCpu)}%</span>
+                      </div>
+
+                      {/* 2. RAM */}
+                      <div className="flex items-center gap-1 pl-1 border-l border-slate-800" title={`RAM: ${ramPercent}%`}>
+                        <div className="w-3.5 h-3.5 bg-[#0a0f1d] border border-[#1e293b] rounded-sm p-[1px] flex items-end justify-between gap-[0.5px]">
+                          {ramHistory.slice(-8).map((val, i) => (
+                            <div key={i} className="flex-1 h-full flex items-end">
+                              <div
+                                style={{
+                                  height: `${Math.max(val > 0 ? 10 : 0, Math.min(100, val))}%`,
+                                  backgroundColor: val > 85 ? '#ef4444' : val > 65 ? '#f59e0b' : '#8b5cf6'
+                                }}
+                                className="w-full"
+                              />
+                            </div>
+                          ))}
                         </div>
-                        <div className="w-0.5 bg-slate-800 h-full flex items-end">
-                          <div
-                            style={{
-                              height: `${Math.max(10, Math.min(100, totalGpu))}%`,
-                              backgroundColor: totalGpu > 80 ? '#ef4444' : totalGpu > 40 ? '#f59e0b' : '#06b6d4'
-                            }}
-                            className="w-full"
-                          ></div>
+                        <span className="text-[9px] text-purple-400 font-bold">{ramPercent}%</span>
+                      </div>
+
+                      {/* 3. GPU */}
+                      <div className="flex items-center gap-1 pl-1 border-l border-slate-800" title={`GPU: ${totalGpu.toFixed(1)}%`}>
+                        <div className="w-3.5 h-3.5 bg-[#0a0f1d] border border-[#1e293b] rounded-sm p-[1px] flex items-end justify-between gap-[0.5px]">
+                          {gpuHistory.slice(-8).map((val, i) => (
+                            <div key={i} className="flex-1 h-full flex items-end">
+                              <div
+                                style={{
+                                  height: `${Math.max(val > 0 ? 10 : 0, Math.min(100, val))}%`,
+                                  backgroundColor: val > 80 ? '#ef4444' : val > 40 ? '#f59e0b' : '#06b6d4'
+                                }}
+                                className="w-full"
+                              />
+                            </div>
+                          ))}
                         </div>
+                        <span className="text-[9px] text-cyan-400 font-bold">{Math.round(totalGpu)}%</span>
                       </div>
                     </div>
                   </div>
@@ -1050,10 +1212,19 @@ export default function App() {
             {/* Menu contextuel clic droit du System Tray */}
             {trayMenu && (
               <div
-                style={{ top: trayMenu.y - 60, left: trayMenu.x - 80 }}
-                className="fixed z-50 bg-slate-900 border border-slate-700 shadow-2xl rounded py-1 min-w-[190px] text-xs text-slate-200"
+                style={{ top: Math.max(10, trayMenu.y - 80), left: Math.max(10, trayMenu.x - 90) }}
+                className="fixed z-50 bg-slate-900 border border-slate-700 shadow-2xl rounded py-1 min-w-[210px] text-xs text-slate-200 select-none"
                 onClick={(e) => e.stopPropagation()}
               >
+                <div className="px-3 py-1 text-[11px] font-mono text-slate-300 font-bold border-b border-slate-800 flex items-center justify-between">
+                  <span>
+                    {trayMenu.type === 'cpu'
+                      ? `Historique CPU : ${totalCpu.toFixed(1)} %`
+                      : trayMenu.type === 'ram'
+                      ? `Historique RAM : ${ramPercent} % (${(totalRamMB / 1024).toFixed(1)} Go)`
+                      : `Historique GPU : ${totalGpu.toFixed(1)} %`}
+                  </span>
+                </div>
                 <button
                   onClick={() => {
                     setIsMinimizedToTray(false);

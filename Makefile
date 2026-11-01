@@ -13,10 +13,12 @@ SRC = taskmgr.c
 all: $(TARGET)
 
 $(TARGET): $(SRC)
+	-taskkill /IM $(TARGET) /F
 	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(LIBS)
 	@echo Compilation terminee avec succes : $(TARGET)
 
 clean:
+	-taskkill /IM $(TARGET) /F
 	rm -f $(TARGET)
 
 .PHONY: all clean

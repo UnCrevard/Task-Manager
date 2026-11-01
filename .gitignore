@@ -1,19 +1,8 @@
-node_modules/
-build/
-dist/
-coverage/
-.DS_Store
-*.log
-.env*
-!.env.example
-
-.vscode/
 .aistudio/
 src/
+.env.*
 index.html
-metadata.json
-package.json
-settings.ini
-tsconfig.json
-vite.config.ts
+*.json
+*.ts
+
 

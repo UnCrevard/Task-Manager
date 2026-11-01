@@ -6,3 +6,13 @@ coverage/
 *.log
 .env*
 !.env.example
+
+.aistudio
+src/
+index.html
+metadata.json
+package.json
+settings.ini
+tsconfig.json
+vite.config.ts
+

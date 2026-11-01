@@ -1,8 +1,10 @@
 # Makefile pour Windows Task Manager en C (MinGW-w64)
 # Compatible avec gcc / mingw32-make sous Windows ou compilation croisée Linux
 
+#  -DUNICODE -D_UNICODE
+
 CC ?= gcc
-CFLAGS = -mwindows -O2 -Wall -Wextra -DUNICODE -D_UNICODE
+CFLAGS = -mwindows -O2 -Wall -Wextra
 LIBS = -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32
 
 TARGET = taskmgr.exe

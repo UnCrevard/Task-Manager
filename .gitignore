@@ -4,5 +4,8 @@ src/
 index.html
 *.json
 *.ts
+
+.vscode/
+desktop.ini
 settings.ini
 *.o

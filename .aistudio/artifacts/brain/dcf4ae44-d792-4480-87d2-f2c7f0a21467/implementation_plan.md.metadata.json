@@ -1,6 +1,0 @@
-{
-  "summary":  "Plan révisé concentré à 100% sur le programme C natif Win32 pour Windows : code source C pur (taskmgr.c), scripts de compilation MinGW-w64 (Makefile, build.bat) et documentation d'utilisation.",
-  "updatedAt":  "2026-11-01T13:33:36.183973639Z",
-  "requestFeedback":  true,
-  "userFacing":  true
-}

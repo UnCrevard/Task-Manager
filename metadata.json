@@ -1,6 +1,0 @@
-{
-  "name": "Windows Native C Task Manager",
-  "description": "Task Manager natif en C Win32 pour Windows compilable avec MinGW-w64, avec tableau plat de processus, stats temps réel, terminaison instantanée et arguments CLI.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

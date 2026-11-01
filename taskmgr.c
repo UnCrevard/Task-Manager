@@ -43,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 
 #ifdef _MSC_VER
 // Activation du style visuel Windows moderne sous MSVC
@@ -202,6 +203,11 @@ static BOOL g_bTrayGpuCreated = FALSE;
 static HICON g_hIconCpu = NULL;
 static HICON g_hIconRam = NULL;
 static HICON g_hIconGpu = NULL;
+
+// Icônes de l'application Task Manager
+#define IDI_APP_ICON 1
+static HICON g_hAppIcon = NULL;
+static HICON g_hAppIconSm = NULL;
 
 // Variables globales UI
 static HWND g_hMainWnd = NULL;
@@ -441,6 +447,176 @@ HICON CreateHistoryGraphIcon(const double *history, int count, DWORD baseColor, 
 
     HBITMAP hbmColor = CreateBitmap(16, 16, 1, 32, pixels);
     HBITMAP hbmMask = CreateBitmap(16, 16, 1, 1, andMask);
+    if (!hbmColor || !hbmMask) {
+        if (hbmColor) DeleteObject(hbmColor);
+        if (hbmMask) DeleteObject(hbmMask);
+        return NULL;
+    }
+
+    ICONINFO ii;
+    memset(&ii, 0, sizeof(ICONINFO));
+    ii.fIcon = TRUE;
+    ii.xHotspot = 0;
+    ii.yHotspot = 0;
+    ii.hbmMask = hbmMask;
+    ii.hbmColor = hbmColor;
+
+    HICON hIcon = CreateIconIndirect(&ii);
+
+    DeleteObject(hbmColor);
+    DeleteObject(hbmMask);
+
+    return hIcon;
+}
+
+// Création programmatique d'une icône native de Task Manager (cadre sombre + grille + onde télémétrique néon)
+// Sert de fallback automatique si l'exécutable est compilé sans le fichier de ressource .rc lié
+HICON CreateTaskManagerAppIcon(int size) {
+    if (size != 16 && size != 32 && size != 48) size = 32;
+
+    int totalPixels = size * size;
+    DWORD *pixels = (DWORD*)malloc(totalPixels * sizeof(DWORD));
+    if (!pixels) return NULL;
+
+    int andRowBytes = ((size + 31) / 32) * 4;
+    int andSize = andRowBytes * size;
+    BYTE *andMask = (BYTE*)calloc(1, andSize);
+    if (!andMask) {
+        free(pixels);
+        return NULL;
+    }
+
+    int r = (size <= 16) ? 2 : (size / 7);
+    int topBarH = (size <= 16) ? 3 : (size / 7);
+    int screenBottom = size - 2;
+    int screenTop = topBarH;
+    int screenH = screenBottom - screenTop;
+
+    for (int y = 0; y < size; y++) {
+        for (int x = 0; x < size; x++) {
+            int dx = (x < size / 2) ? x : (size - 1 - x);
+            int dy = (y < size / 2) ? y : (size - 1 - y);
+
+            // Coins arrondis transparents
+            if (dx < r && dy < r) {
+                int distSq = (r - dx) * (r - dx) + (r - dy) * (r - dy);
+                if (distSq > r * r) {
+                    pixels[y * size + x] = 0x00000000;
+                    // Marquer le bit dans le masque AND pour transparence Windows native
+                    int byteIdx = (size - 1 - y) * andRowBytes + (x / 8);
+                    andMask[byteIdx] |= (BYTE)(1 << (7 - (x % 8)));
+                    continue;
+                }
+            }
+
+            // Bordure extérieure de la fenêtre
+            if (x == 0 || x == size - 1 || y == 0 || y == size - 1 ||
+                (dx < r && dy < r && (r - dx) * (r - dx) + (r - dy) * (r - dy) >= (r - 1) * (r - 1))) {
+                pixels[y * size + x] = 0xFF1E293B; // Slate 800
+            } else if (y < topBarH) {
+                pixels[y * size + x] = 0xFF0F172A; // Barre de titre sombre
+            } else {
+                // Écran intérieur du moniteur de tâches
+                pixels[y * size + x] = 0xFF090D16; // Noir bleuté profond
+
+                // Lignes de quadrillage télémétrique
+                int stepY = (size <= 16) ? 4 : (size / 4);
+                int stepX = (size <= 16) ? 4 : (size / 4);
+                if ((y - screenTop) % stepY == 0 || (x - 1) % stepX == 0) {
+                    pixels[y * size + x] = 0xFF122637; // Grille cyan très subtile
+                }
+            }
+        }
+    }
+
+    // Points indicateurs LED dans la barre de titre
+    if (size >= 16) {
+        pixels[1 * size + (size - 3)] = 0xFF10B981; // LED verte active
+        if (size >= 32) {
+            pixels[1 * size + (size - 5)] = 0xFF06B6D4; // LED cyan
+            pixels[1 * size + (size - 7)] = 0xFF3B82F6; // LED bleue
+        }
+    }
+
+    // Onde d'activité CPU / télémétrie (courbe d'impulsion style Task Manager)
+    int countW = size - 2;
+    int *waveY = (int*)malloc(countW * sizeof(int));
+    if (waveY) {
+        for (int i = 0; i < countW; i++) {
+            double nx = (double)i / (double)(countW - 1);
+            double ny = 0.25;
+            if (nx < 0.20) {
+                ny = 0.25;
+            } else if (nx < 0.30) {
+                double t = (nx - 0.20) / 0.10;
+                ny = 0.25 - 0.15 * (1.0 - fabs(2.0 * t - 1.0));
+            } else if (nx < 0.45) {
+                double t = (nx - 0.30) / 0.15;
+                if (t < 0.5) {
+                    ny = 0.25 + 0.65 * (t / 0.5);
+                } else {
+                    ny = 0.90 - 0.85 * ((t - 0.5) / 0.5);
+                }
+            } else if (nx < 0.60) {
+                double t = (nx - 0.45) / 0.15;
+                if (t < 0.5) {
+                    ny = 0.05 + 0.55 * (t / 0.5);
+                } else {
+                    ny = 0.60 - 0.35 * ((t - 0.5) / 0.5);
+                }
+            } else if (nx < 0.75) {
+                double t = (nx - 0.60) / 0.15;
+                ny = 0.25 + 0.20 * (1.0 - fabs(2.0 * t - 1.0));
+            } else {
+                ny = 0.25;
+            }
+
+            int py = (int)(screenBottom - ny * screenH + 0.5);
+            if (py < screenTop) py = screenTop;
+            if (py > screenBottom) py = screenBottom;
+            waveY[i] = py;
+
+            int x = 1 + i;
+            // Remplissage sous la courbe (gradient cyan sombre)
+            for (int fy = py + 1; fy <= screenBottom; fy++) {
+                DWORD cur = pixels[fy * size + x];
+                if ((cur & 0xFF000000) != 0) {
+                    pixels[fy * size + x] = 0xFF083344;
+                }
+            }
+        }
+
+        // Tracé de l'onde lumineuse néon
+        int peakY = size;
+        int peakX = 1;
+        for (int i = 0; i < countW; i++) {
+            int x = 1 + i;
+            int y = waveY[i];
+            pixels[y * size + x] = 0xFF00F0FF; // Cyan éclatant
+            if (y < peakY) {
+                peakY = y;
+                peakX = x;
+            }
+            if (size >= 32 && y > screenTop) {
+                pixels[(y - 1) * size + x] = 0xFF06B6D4;
+            }
+        }
+
+        // Pic d'activité blanc vif au sommet de l'impulsion
+        pixels[peakY * size + peakX] = 0xFFFFFFFF;
+        if (size >= 32 && peakY + 1 <= screenBottom) {
+            pixels[(peakY + 1) * size + peakX] = 0xFFA5F3FC;
+        }
+
+        free(waveY);
+    }
+
+    HBITMAP hbmColor = CreateBitmap(size, size, 1, 32, pixels);
+    HBITMAP hbmMask = CreateBitmap(size, size, 1, 1, andMask);
+
+    free(pixels);
+    free(andMask);
+
     if (!hbmColor || !hbmMask) {
         if (hbmColor) DeleteObject(hbmColor);
         if (hbmMask) DeleteObject(hbmMask);
@@ -766,17 +942,28 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         g_pfnNtQueryInfoProcess = (pfnNtQueryInformationProcess)(void*)GetProcAddress(hNtdll, "NtQueryInformationProcess");
     }
 
+    // Chargement de l'icône Task Manager (depuis la ressource PE ou via génération programmatique native)
+    g_hAppIcon = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 32, 32, LR_DEFAULTCOLOR);
+    g_hAppIconSm = (HICON)LoadImageW(hInstance, MAKEINTRESOURCEW(IDI_APP_ICON), IMAGE_ICON, 16, 16, LR_DEFAULTCOLOR);
+
+    if (!g_hAppIcon) {
+        g_hAppIcon = CreateTaskManagerAppIcon(32);
+    }
+    if (!g_hAppIconSm) {
+        g_hAppIconSm = CreateTaskManagerAppIcon(16);
+    }
+
     const WCHAR CLASS_NAME[] = L"Win32NativeTaskManager";
     WNDCLASSEXW wc = { 0 };
     wc.cbSize = sizeof(WNDCLASSEXW);
     wc.style = CS_HREDRAW | CS_VREDRAW;
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
-    wc.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIcon = g_hAppIcon ? g_hAppIcon : LoadIcon(NULL, IDI_APPLICATION);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
     wc.lpszClassName = CLASS_NAME;
-    wc.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
+    wc.hIconSm = g_hAppIconSm ? g_hAppIconSm : LoadIcon(NULL, IDI_APPLICATION);
 
     if (!RegisterClassExW(&wc)) {
         return 1;
@@ -796,6 +983,14 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     g_hMainWnd = hWnd;
+
+    // Définition explicite des icônes de fenêtre (barre de titre, Alt+Tab, barre des tâches Windows)
+    if (g_hAppIcon) {
+        SendMessageW(hWnd, WM_SETICON, ICON_BIG, (LPARAM)g_hAppIcon);
+    }
+    if (g_hAppIconSm) {
+        SendMessageW(hWnd, WM_SETICON, ICON_SMALL, (LPARAM)g_hAppIconSm);
+    }
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
 
@@ -1275,6 +1470,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
     case WM_DESTROY:
         RemoveAllTrayIcons();
+        if (g_hAppIcon) {
+            DestroyIcon(g_hAppIcon);
+            g_hAppIcon = NULL;
+        }
+        if (g_hAppIconSm) {
+            DestroyIcon(g_hAppIconSm);
+            g_hAppIconSm = NULL;
+        }
         SaveSettings();
         if (g_bAutoRefresh) {
             KillTimer(hWnd, IDT_REFRESH_TIMER);

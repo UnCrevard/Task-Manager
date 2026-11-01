@@ -55,23 +55,37 @@ Process1=spotify.exe
 
 ---
 
+## 🎨 Icône Native de l'Application
+
+L'application inclut une véritable icône dédiée de Task Manager (châssis sombre, quadrillage télémétrique, barre supérieure avec LEDs d'activité et onde ECG/impulsion CPU néon) :
+- **Fichier `app.ico` multi-résolutions** : 16x16, 32x32 et 48x48 en 32-bit ARGB.
+- **Intégration PE (`resource.rc`)** : Compilée par `windres` pour que l'exécutable `taskmgr.exe` arbore l'icône dans l'Explorateur Windows et sur le bureau.
+- **Fallback programmatique automatique (`CreateTaskManagerAppIcon`)** : Si vous compilez directement `taskmgr.c` sans `windres`, le code C génère l'icône de zéro en mémoire GDI (`CreateIconIndirect`) et l'assigne à la fenêtre (`WM_SETICON`) !
+
+---
+
 ## 🛠️ Compilation avec MinGW-w64
 
-### 1. Commande directe dans le terminal (CMD ou PowerShell)
-
-```cmd
-gcc -mwindows -O2 -Wall -Wextra -o taskmgr.exe taskmgr.c -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32
-```
-
-### 2. Ou via le script fourni `build.bat`
-
-Double-cliquez simplement sur `build.bat` sous Windows pour compiler et lancer l'application.
-
-### 3. Ou via `make`
+### Option 1 : Via `make` (avec intégration de l'icône via `windres`)
 
 ```cmd
 mingw32-make
 ```
+*(Cette commande compile automatiquement `resource.rc` avec `windres` puis lie `resource.o` à `taskmgr.exe`).*
+
+### Option 2 : Compilation manuelle en 2 étapes (avec icône dans l'explorateur)
+
+```cmd
+windres resource.rc -O coff -o resource.o
+gcc -mwindows -O2 -Wall -Wextra -o taskmgr.exe taskmgr.c resource.o -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32
+```
+
+### Option 3 : Compilation directe ultra-simple (1 seule ligne)
+
+```cmd
+gcc -mwindows -O2 -Wall -Wextra -o taskmgr.exe taskmgr.c -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32
+```
+*(Le fallback automatique dans `taskmgr.c` générera l'icône en mémoire au lancement de l'application).*
 
 ---
 

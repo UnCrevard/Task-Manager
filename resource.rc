@@ -1,0 +1,5 @@
+// Resource file pour le Gestionnaire des tâches Win32 natif
+#define IDI_APP_ICON 1
+
+// 1ère icône du binaire PE = icône par défaut de l'exécutable sous l'explorateur Windows
+IDI_APP_ICON ICON "app.ico"

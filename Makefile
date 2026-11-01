@@ -3,7 +3,7 @@
 
 CC ?= gcc
 WINDRES ?= windres
-CFLAGS = -mwindows -O2 -Wall -Wextra
+CFLAGS = -mwindows -O2 -s -static -Wall -Wextra
 LIBS = -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32
 
 TARGET = taskmgr.exe

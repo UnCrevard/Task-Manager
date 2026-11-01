@@ -639,7 +639,50 @@ HICON CreateTaskManagerAppIcon(int size) {
     return hIcon;
 }
 
+// Structure pour les statistiques des plus gros consommateurs de ressource
+typedef struct {
+    WCHAR szName[64];
+    double value;
+    DWORD pid;
+} TopConsumer;
+
+// Récupère les 4 processus les plus gourmands pour une ressource donnée (0: CPU, 1: RAM, 2: GPU)
+void GetTop4Consumers(int resourceType, TopConsumer top[4]) {
+    for (int i = 0; i < 4; i++) {
+        top[i].szName[0] = L'\0';
+        top[i].value = -1.0;
+        top[i].pid = 0;
+    }
+
+    for (int i = 0; i < g_ProcessCount; i++) {
+        if (g_Processes[i].pid == 0) continue; // Ignorer System Idle Process
+
+        double val = 0.0;
+        if (resourceType == 0) {
+            val = g_Processes[i].cpuPercent;
+        } else if (resourceType == 1) {
+            val = (double)g_Processes[i].workingSetMB;
+        } else if (resourceType == 2) {
+            val = g_Processes[i].gpuPercent;
+        }
+
+        // Tri par insertion directe dans le Top 4
+        for (int r = 0; r < 4; r++) {
+            if (val > top[r].value) {
+                for (int s = 3; s > r; s--) {
+                    top[s] = top[s - 1];
+                }
+                top[r].value = val;
+                top[r].pid = g_Processes[i].pid;
+                wcsncpy_s(top[r].szName, 64, g_Processes[i].szName, 14);
+                break;
+            }
+        }
+    }
+}
+
 // Mise à jour des 3 icônes distinctes d'historique (CPU, RAM, GPU) dans la barre des tâches
+// avec affichage dynamique des 4 premiers consommateurs au survol de la souris
 void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb) {
     if (!g_hMainWnd) return;
 
@@ -668,7 +711,16 @@ void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRam
         g_TrayGpuHistory[TRAY_HISTORY_POINTS - 1] = gpuPct;
     }
 
+    // Calcul des Top 4 consommateurs pour chaque ressource
+    TopConsumer topCpu[4];
+    TopConsumer topRam[4];
+    TopConsumer topGpu[4];
+    GetTop4Consumers(0, topCpu);
+    GetTop4Consumers(1, topRam);
+    GetTop4Consumers(2, topGpu);
+
     // 1. Icône CPU : Vert émeraude (Base: #10B981, Pic: #34D399, Alerte: #EF4444)
+    // Au survol souris : affiche le total CPU et le Top 4 des processus les plus gourmands en CPU
     HICON hNewCpu = CreateHistoryGraphIcon(g_TrayCpuHistory, TRAY_HISTORY_POINTS, 0xFF10B981, 0xFF34D399, 0xFFEF4444);
     if (hNewCpu) {
         NOTIFYICONDATAW nid;
@@ -679,8 +731,14 @@ void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRam
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
         nid.hIcon = hNewCpu;
+
         swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
-            L"CPU : %.1f %%\nHistorique (14s) [Vert]\nDouble-clic pour restaurer", cpuPct);
+            L"CPU : %.1f %%\n1. %.11s: %.1f%%\n2. %.11s: %.1f%%\n3. %.11s: %.1f%%\n4. %.11s: %.1f%%",
+            cpuPct,
+            topCpu[0].szName[0] ? topCpu[0].szName : L"-", (topCpu[0].value > 0.0) ? topCpu[0].value : 0.0,
+            topCpu[1].szName[0] ? topCpu[1].szName : L"-", (topCpu[1].value > 0.0) ? topCpu[1].value : 0.0,
+            topCpu[2].szName[0] ? topCpu[2].szName : L"-", (topCpu[2].value > 0.0) ? topCpu[2].value : 0.0,
+            topCpu[3].szName[0] ? topCpu[3].szName : L"-", (topCpu[3].value > 0.0) ? topCpu[3].value : 0.0);
 
         if (!g_bTrayCpuCreated) {
             if (Shell_NotifyIconW(NIM_ADD, &nid)) g_bTrayCpuCreated = TRUE;
@@ -693,6 +751,7 @@ void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRam
     }
 
     // 2. Icône RAM : Violet vif (Base: #8B5CF6, Pic: #A78BFA, Alerte: #EF4444)
+    // Au survol souris : affiche le total RAM et le Top 4 des processus les plus gourmands en mémoire
     HICON hNewRam = CreateHistoryGraphIcon(g_TrayRamHistory, TRAY_HISTORY_POINTS, 0xFF8B5CF6, 0xFFA78BFA, 0xFFEF4444);
     if (hNewRam) {
         NOTIFYICONDATAW nid;
@@ -703,9 +762,14 @@ void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRam
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
         nid.hIcon = hNewRam;
+
         swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
-            L"RAM : %.1f %% (%.1f / %.1f Go)\nHistorique (14s) [Violet]\nDouble-clic pour restaurer",
-            memPct, usedRamGb, totalRamGb);
+            L"RAM : %.1f %% (%.1f/%.1fGo)\n1. %.10s: %uMo\n2. %.10s: %uMo\n3. %.10s: %uMo\n4. %.10s: %uMo",
+            memPct, usedRamGb, totalRamGb,
+            topRam[0].szName[0] ? topRam[0].szName : L"-", (UINT)(topRam[0].value > 0.0 ? topRam[0].value : 0.0),
+            topRam[1].szName[0] ? topRam[1].szName : L"-", (UINT)(topRam[1].value > 0.0 ? topRam[1].value : 0.0),
+            topRam[2].szName[0] ? topRam[2].szName : L"-", (UINT)(topRam[2].value > 0.0 ? topRam[2].value : 0.0),
+            topRam[3].szName[0] ? topRam[3].szName : L"-", (UINT)(topRam[3].value > 0.0 ? topRam[3].value : 0.0));
 
         if (!g_bTrayRamCreated) {
             if (Shell_NotifyIconW(NIM_ADD, &nid)) g_bTrayRamCreated = TRUE;
@@ -718,6 +782,7 @@ void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRam
     }
 
     // 3. Icône GPU : Cyan électrique (Base: #06B6D4, Pic: #67E8F9, Alerte: #EF4444)
+    // Au survol souris : affiche le total GPU et le Top 4 des processus les plus gourmands en GPU
     HICON hNewGpu = CreateHistoryGraphIcon(g_TrayGpuHistory, TRAY_HISTORY_POINTS, 0xFF06B6D4, 0xFF67E8F9, 0xFFEF4444);
     if (hNewGpu) {
         NOTIFYICONDATAW nid;
@@ -728,8 +793,14 @@ void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRam
         nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
         nid.uCallbackMessage = WM_TRAYICON;
         nid.hIcon = hNewGpu;
+
         swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
-            L"GPU : %.1f %%\nHistorique (14s) [Cyan]\nDouble-clic pour restaurer", gpuPct);
+            L"GPU : %.1f %%\n1. %.11s: %.1f%%\n2. %.11s: %.1f%%\n3. %.11s: %.1f%%\n4. %.11s: %.1f%%",
+            gpuPct,
+            topGpu[0].szName[0] ? topGpu[0].szName : L"-", (topGpu[0].value > 0.0) ? topGpu[0].value : 0.0,
+            topGpu[1].szName[0] ? topGpu[1].szName : L"-", (topGpu[1].value > 0.0) ? topGpu[1].value : 0.0,
+            topGpu[2].szName[0] ? topGpu[2].szName : L"-", (topGpu[2].value > 0.0) ? topGpu[2].value : 0.0,
+            topGpu[3].szName[0] ? topGpu[3].szName : L"-", (topGpu[3].value > 0.0) ? topGpu[3].value : 0.0);
 
         if (!g_bTrayGpuCreated) {
             if (Shell_NotifyIconW(NIM_ADD, &nid)) g_bTrayGpuCreated = TRUE;

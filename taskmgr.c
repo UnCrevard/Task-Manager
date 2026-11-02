@@ -71,6 +71,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #define IDC_BTN_PRIORITY     1008
 #define IDC_BTN_HIDE_WINDOWS 1009
 #define IDC_BTN_EXCLUSIONS   1010
+#define IDC_GRAPH_BANNER     1011
 
 // Identifiants du Timer
 #define IDT_REFRESH_TIMER    2001
@@ -189,6 +190,13 @@ static double g_TrayRamHistory[TRAY_HISTORY_POINTS] = { 0 };
 static double g_TrayGpuHistory[TRAY_HISTORY_POINTS] = { 0 };
 static int g_TrayHistoryCount = 0;
 
+// Historique étendu sur 60 secondes pour les graphiques de performances au-dessus des processus
+#define PERF_HISTORY_POINTS 60
+static double g_PerfCpuHistory[PERF_HISTORY_POINTS] = { 0 };
+static double g_PerfRamHistory[PERF_HISTORY_POINTS] = { 0 };
+static double g_PerfGpuHistory[PERF_HISTORY_POINTS] = { 0 };
+static int g_PerfHistoryCount = 0;
+
 static double g_LastCpuPct = 0.0;
 static double g_LastMemPct = 0.0;
 static double g_LastGpuPct = 0.0;
@@ -213,6 +221,7 @@ static HICON g_hAppIconSm = NULL;
 static HWND g_hMainWnd = NULL;
 static HWND g_hListView = NULL;
 static HWND g_hStatusBar = NULL;
+static HWND g_hGraphBanner = NULL;
 static HWND g_hBtnRefresh = NULL;
 static HWND g_hBtnAutoRefresh = NULL;
 static HWND g_hBtnKill = NULL;
@@ -221,6 +230,8 @@ static HWND g_hBtnExclusions = NULL;
 static HWND g_hEditSearch = NULL;
 static WCHAR g_szSearchFilter[128] = { 0 };
 static HFONT g_hFont = NULL;
+static HFONT g_hFontBold = NULL;
+static HFONT g_hFontSmall = NULL;
 
 // Pointeur dynamique vers NtQueryInformationProcess
 typedef NTSTATUS (NTAPI *pfnNtQueryInformationProcess)(
@@ -1315,6 +1326,238 @@ static LRESULT CALLBACK StatusBarSubclassProc(
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
+// Dessin d'une carte de métrique (CPU, RAM, GPU) avec graphique d'historique 60s
+static void DrawPerfCard(
+    HDC hdc, RECT rcCard, const WCHAR *szTitle, const WCHAR *szSub,
+    const double *history, int count, double curVal,
+    COLORREF clrAccent, COLORREF clrPeak, COLORREF clrArea,
+    BOOL bIsDark
+) {
+    // 1. Fond et bordure douce de la carte
+    COLORREF clrCardBg = bIsDark ? RGB(30, 32, 40) : RGB(255, 255, 255);
+    COLORREF clrCardBorder = bIsDark ? RGB(48, 52, 64) : RGB(226, 232, 240);
+    HBRUSH hBrBg = CreateSolidBrush(clrCardBg);
+    HPEN hPenBorder = CreatePen(PS_SOLID, 1, clrCardBorder);
+    HBRUSH hOldBr = (HBRUSH)SelectObject(hdc, hBrBg);
+    HPEN hOldPen = (HPEN)SelectObject(hdc, hPenBorder);
+    RoundRect(hdc, rcCard.left, rcCard.top, rcCard.right, rcCard.bottom, 6, 6);
+    SelectObject(hdc, hOldBr);
+    SelectObject(hdc, hOldPen);
+    DeleteObject(hBrBg);
+    DeleteObject(hPenBorder);
+
+    // 2. En-tête : Pastille de ressource, Titre et Valeur actuelle
+    SetBkMode(hdc, TRANSPARENT);
+
+    // Pastille colorée
+    RECT rcDot = { rcCard.left + 10, rcCard.top + 9, rcCard.left + 14, rcCard.top + 21 };
+    HBRUSH hBrDot = CreateSolidBrush(clrAccent);
+    FillRect(hdc, &rcDot, hBrDot);
+    DeleteObject(hBrDot);
+
+    // Titre de la ressource
+    RECT rcTitle = { rcCard.left + 20, rcCard.top + 6, rcCard.left + 140, rcCard.top + 22 };
+    SetTextColor(hdc, bIsDark ? RGB(232, 236, 244) : RGB(30, 41, 59));
+    HFONT hOldFont = NULL;
+    if (g_hFontBold) hOldFont = (HFONT)SelectObject(hdc, g_hFontBold);
+    else if (g_hFont) hOldFont = (HFONT)SelectObject(hdc, g_hFont);
+    DrawTextW(hdc, szTitle, -1, &rcTitle, DT_SINGLELINE | DT_VCENTER);
+
+    // Valeur actuelle en gros à droite
+    WCHAR szValStr[64];
+    swprintf_s(szValStr, sizeof(szValStr) / sizeof(WCHAR), L"%.1f %%", curVal);
+    RECT rcVal = { rcCard.right - 120, rcCard.top + 6, rcCard.right - 10, rcCard.top + 22 };
+    SetTextColor(hdc, clrPeak);
+    DrawTextW(hdc, szValStr, -1, &rcVal, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
+
+    // Sous-titre descriptif
+    RECT rcSub = { rcCard.left + 20, rcCard.top + 21, rcCard.right - 10, rcCard.top + 33 };
+    SetTextColor(hdc, bIsDark ? RGB(148, 154, 168) : RGB(100, 116, 139));
+    if (g_hFontSmall) SelectObject(hdc, g_hFontSmall);
+    DrawTextW(hdc, szSub, -1, &rcSub, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+
+    if (hOldFont) SelectObject(hdc, hOldFont);
+
+    // 3. Cadre intérieur du graphique
+    RECT rcGraph = { rcCard.left + 8, rcCard.top + 34, rcCard.right - 8, rcCard.bottom - 7 };
+    int gW = rcGraph.right - rcGraph.left;
+    int gH = rcGraph.bottom - rcGraph.top;
+    if (gW < 20 || gH < 15) return;
+
+    // Fond du graphique
+    COLORREF clrGraphBg = bIsDark ? RGB(20, 22, 28) : RGB(248, 250, 252);
+    HBRUSH hBrGraph = CreateSolidBrush(clrGraphBg);
+    HPEN hPenGraphBorder = CreatePen(PS_SOLID, 1, bIsDark ? RGB(38, 42, 52) : RGB(226, 232, 240));
+    hOldBr = (HBRUSH)SelectObject(hdc, hBrGraph);
+    hOldPen = (HPEN)SelectObject(hdc, hPenGraphBorder);
+    Rectangle(hdc, rcGraph.left, rcGraph.top, rcGraph.right, rcGraph.bottom);
+    SelectObject(hdc, hOldBr);
+    SelectObject(hdc, hOldPen);
+    DeleteObject(hBrGraph);
+    DeleteObject(hPenGraphBorder);
+
+    // Lignes de grille (50% horizontale)
+    HPEN hGridPen = CreatePen(PS_SOLID, 1, bIsDark ? RGB(32, 35, 45) : RGB(235, 238, 243));
+    hOldPen = (HPEN)SelectObject(hdc, hGridPen);
+    int y50 = rcGraph.top + gH / 2;
+    MoveToEx(hdc, rcGraph.left + 1, y50, NULL);
+    LineTo(hdc, rcGraph.right - 1, y50);
+
+    // Lignes verticales de grille (toutes les 15 secondes)
+    for (int s = 1; s <= 3; s++) {
+        int xGrid = rcGraph.left + (gW * s) / 4;
+        MoveToEx(hdc, xGrid, rcGraph.top + 1, NULL);
+        LineTo(hdc, xGrid, rcGraph.bottom - 1);
+    }
+    SelectObject(hdc, hOldPen);
+    DeleteObject(hGridPen);
+
+    // Tracé de la courbe et de la zone ombrée sous la courbe
+    if (count > 1) {
+        POINT *pts = (POINT*)malloc(sizeof(POINT) * (count + 2));
+        if (pts) {
+            for (int i = 0; i < count; i++) {
+                double pct = history[i];
+                if (pct < 0.0) pct = 0.0;
+                if (pct > 100.0) pct = 100.0;
+
+                int px = rcGraph.left + (int)(((double)i / (double)(count - 1)) * (gW - 2)) + 1;
+                int py = rcGraph.bottom - 1 - (int)((pct / 100.0) * (gH - 3));
+                if (py < rcGraph.top + 1) py = rcGraph.top + 1;
+                if (py > rcGraph.bottom - 1) py = rcGraph.bottom - 1;
+
+                pts[i].x = px;
+                pts[i].y = py;
+            }
+
+            // Polygone fermé pour le remplissage sous la courbe
+            pts[count].x = pts[count - 1].x;
+            pts[count].y = rcGraph.bottom - 1;
+            pts[count + 1].x = pts[0].x;
+            pts[count + 1].y = rcGraph.bottom - 1;
+
+            HBRUSH hBrArea = CreateSolidBrush(clrArea);
+            HPEN hPenNull = CreatePen(PS_NULL, 0, 0);
+            hOldBr = (HBRUSH)SelectObject(hdc, hBrArea);
+            hOldPen = (HPEN)SelectObject(hdc, hPenNull);
+            Polygon(hdc, pts, count + 2);
+            SelectObject(hdc, hOldBr);
+            SelectObject(hdc, hOldPen);
+            DeleteObject(hBrArea);
+            DeleteObject(hPenNull);
+
+            // Courbe principale
+            HPEN hPenLine = CreatePen(PS_SOLID, 2, clrAccent);
+            hOldPen = (HPEN)SelectObject(hdc, hPenLine);
+            Polyline(hdc, pts, count);
+            SelectObject(hdc, hOldPen);
+            DeleteObject(hPenLine);
+
+            // Point lumineux final sur l'échantillon actuel
+            int lastX = pts[count - 1].x;
+            int lastY = pts[count - 1].y;
+            HBRUSH hBrDotEnd = CreateSolidBrush(clrPeak);
+            HPEN hPenDotBorder = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
+            hOldBr = (HBRUSH)SelectObject(hdc, hBrDotEnd);
+            hOldPen = (HPEN)SelectObject(hdc, hPenDotBorder);
+            Ellipse(hdc, lastX - 3, lastY - 3, lastX + 3, lastY + 3);
+            SelectObject(hdc, hOldBr);
+            SelectObject(hdc, hOldPen);
+            DeleteObject(hBrDotEnd);
+            DeleteObject(hPenDotBorder);
+
+            free(pts);
+        }
+    }
+}
+
+// Subclass pour le bandeau graphique des performances (CPU, RAM, GPU) au-dessus de la liste des processus
+static LRESULT CALLBACK GraphBannerSubclassProc(
+    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+    (void)uIdSubclass;
+    (void)dwRefData;
+
+    if (uMsg == WM_ERASEBKGND) {
+        return 1;
+    }
+
+    if (uMsg == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        RECT rcClient;
+        GetClientRect(hWnd, &rcClient);
+
+        int w = rcClient.right - rcClient.left;
+        int h = rcClient.bottom - rcClient.top;
+
+        if (w <= 0 || h <= 0) {
+            EndPaint(hWnd, &ps);
+            return 0;
+        }
+
+        HDC hMemDC = CreateCompatibleDC(hdc);
+        HBITMAP hMemBmp = CreateCompatibleBitmap(hdc, w, h);
+        HBITMAP hOldBmp = (HBITMAP)SelectObject(hMemDC, hMemBmp);
+
+        // Fond du conteneur en accord avec la fenêtre principale
+        HBRUSH hBrBg = g_bDarkModeActive ? g_hDarkWndBrush : (HBRUSH)(COLOR_BTNFACE + 1);
+        FillRect(hMemDC, &rcClient, hBrBg);
+
+        int gap = 8;
+        int cardW = (w - (gap * 2)) / 3;
+        if (cardW < 50) cardW = 50;
+
+        // 1. Carte CPU (Vert émeraude)
+        RECT rcCpu = { 0, 0, cardW, h };
+        WCHAR szCpuSub[64] = L"60 secondes • % d'utilisation";
+        DrawPerfCard(
+            hMemDC, rcCpu, L"CPU", szCpuSub,
+            g_PerfCpuHistory, PERF_HISTORY_POINTS, g_LastCpuPct,
+            RGB(16, 185, 129), RGB(52, 211, 153),
+            g_bDarkModeActive ? RGB(10, 48, 38) : RGB(220, 252, 231),
+            g_bDarkModeActive
+        );
+
+        // 2. Carte Mémoire RAM (Violet / Pourpre)
+        RECT rcRam = { cardW + gap, 0, cardW * 2 + gap, h };
+        WCHAR szRamSub[64];
+        if (g_LastTotalRamGb > 0.0) {
+            swprintf_s(szRamSub, sizeof(szRamSub) / sizeof(WCHAR), L"%.1f / %.1f Go (60s)", g_LastUsedRamGb, g_LastTotalRamGb);
+        } else {
+            wcsncpy_s(szRamSub, 64, L"Utilisation mémoire (60s)", _TRUNCATE);
+        }
+        DrawPerfCard(
+            hMemDC, rcRam, L"Mémoire", szRamSub,
+            g_PerfRamHistory, PERF_HISTORY_POINTS, g_LastMemPct,
+            RGB(168, 85, 247), RGB(192, 132, 252),
+            g_bDarkModeActive ? RGB(44, 24, 66) : RGB(243, 232, 255),
+            g_bDarkModeActive
+        );
+
+        // 3. Carte GPU (Cyan)
+        RECT rcGpu = { (cardW + gap) * 2, 0, w, h };
+        WCHAR szGpuSub[64] = L"Moteur 3D • 60 secondes";
+        DrawPerfCard(
+            hMemDC, rcGpu, L"GPU", szGpuSub,
+            g_PerfGpuHistory, PERF_HISTORY_POINTS, g_LastGpuPct,
+            RGB(6, 182, 212), RGB(34, 211, 238),
+            g_bDarkModeActive ? RGB(8, 44, 56) : RGB(207, 250, 254),
+            g_bDarkModeActive
+        );
+
+        BitBlt(hdc, 0, 0, w, h, hMemDC, 0, 0, SRCCOPY);
+        SelectObject(hMemDC, hOldBmp);
+        DeleteObject(hMemBmp);
+        DeleteDC(hMemDC);
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
 // Subclass de l'en-tête (SysHeader32) pour éviter le scintillement d'effacement
 static LRESULT CALLBACK HeaderSubclassProc(
     HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
@@ -1466,6 +1709,7 @@ static void ApplyModernWindowsTheme(HWND hWnd, HWND hListView) {
         if (g_hBtnHideWindows) g_pfnAllowDarkModeForWindow(g_hBtnHideWindows, g_bDarkModeActive);
         if (g_hBtnExclusions) g_pfnAllowDarkModeForWindow(g_hBtnExclusions, g_bDarkModeActive);
         if (g_hEditSearch) g_pfnAllowDarkModeForWindow(g_hEditSearch, g_bDarkModeActive);
+        if (g_hGraphBanner) g_pfnAllowDarkModeForWindow(g_hGraphBanner, g_bDarkModeActive);
     }
 
     HMODULE hUxTheme = LoadLibraryW(L"uxtheme.dll");
@@ -1640,6 +1884,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         if (!g_hFont) {
             g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
         }
+        g_hFontBold = CreateFontW(
+            -13, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
+        );
+        g_hFontSmall = CreateFontW(
+            -11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
+        );
         HFONT hFont = g_hFont;
 
         // 1. Bouton Auto-Refresh (reprend l'état chargé de settings.ini)
@@ -1708,13 +1962,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         );
         SendMessage(g_hEditSearch, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        // 7. Contrôle ListView SysListView32 avec bordure native subtile
+        // 7. Bandeau graphique des performances (CPU, Mémoire RAM, GPU) au-dessus des processus
+        g_hGraphBanner = CreateWindowExW(
+            0, L"STATIC", L"",
+            WS_CHILD | WS_VISIBLE | SS_NOTIFY,
+            10, 46, 1220, 90,
+            hWnd, (HMENU)IDC_GRAPH_BANNER, GetModuleHandle(NULL), NULL
+        );
+        SetWindowSubclass(g_hGraphBanner, GraphBannerSubclassProc, 30, 0);
+
+        // 8. Contrôle ListView SysListView32 avec bordure native subtile
         g_hListView = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             WC_LISTVIEWW,
             L"",
             WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
-            10, 48, 1220, 600,
+            10, 144, 1220, 500,
             hWnd, (HMENU)IDC_LISTVIEW, GetModuleHandle(NULL), NULL
         );
         SendMessage(g_hListView, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -1726,7 +1989,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         InitListViewColumns(g_hListView);
 
-        // 8. Barre d'état StatusBar
+        // 9. Barre d'état StatusBar
         g_hStatusBar = CreateWindowExW(
             0, STATUSCLASSNAMEW, NULL,
             WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
@@ -1771,7 +2034,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         GetWindowRect(g_hStatusBar, &rcStatus);
         int statusHeight = rcStatus.bottom - rcStatus.top;
 
-        int listTop = 48;
+        int bannerTop = 44;
+        int bannerHeight = 90;
+        if (g_hGraphBanner) {
+            MoveWindow(g_hGraphBanner, 10, bannerTop, width - 20, bannerHeight, TRUE);
+        }
+
+        int listTop = bannerTop + bannerHeight + 8;
         int listHeight = height - listTop - statusHeight - 4;
         if (listHeight < 50) listHeight = 50;
 
@@ -2182,6 +2451,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         if (g_hBtnHideWindows) RemoveWindowSubclass(g_hBtnHideWindows, ButtonSubclassProc, 13);
         if (g_hBtnExclusions)  RemoveWindowSubclass(g_hBtnExclusions, ButtonSubclassProc, 14);
         if (g_hStatusBar)      RemoveWindowSubclass(g_hStatusBar, StatusBarSubclassProc, 20);
+        if (g_hGraphBanner)    RemoveWindowSubclass(g_hGraphBanner, GraphBannerSubclassProc, 30);
 
         FreeThemeBrushes();
         RemoveAllTrayIcons();
@@ -2196,6 +2466,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         if (g_hFont) {
             DeleteObject(g_hFont);
             g_hFont = NULL;
+        }
+        if (g_hFontBold) {
+            DeleteObject(g_hFontBold);
+            g_hFontBold = NULL;
+        }
+        if (g_hFontSmall) {
+            DeleteObject(g_hFontSmall);
+            g_hFontSmall = NULL;
         }
         SaveSettings();
         if (g_bAutoRefresh) {
@@ -2601,6 +2879,29 @@ void RefreshProcessList(void) {
 
     // Mise à jour des 3 icônes d'historique (CPU, RAM, GPU) dans la barre des tâches
     UpdateTrayIcons(totalCpuPercent, memPercent, totalGpuPercent, usedRamGb, totalRamGb);
+
+    // Mise à jour de l'historique 60s pour les graphiques CPU / RAM / GPU du bandeau
+    if (g_PerfHistoryCount == 0) {
+        for (int i = 0; i < PERF_HISTORY_POINTS; i++) {
+            g_PerfCpuHistory[i] = totalCpuPercent;
+            g_PerfRamHistory[i] = memPercent;
+            g_PerfGpuHistory[i] = totalGpuPercent;
+        }
+        g_PerfHistoryCount = PERF_HISTORY_POINTS;
+    } else {
+        for (int i = 0; i < PERF_HISTORY_POINTS - 1; i++) {
+            g_PerfCpuHistory[i] = g_PerfCpuHistory[i + 1];
+            g_PerfRamHistory[i] = g_PerfRamHistory[i + 1];
+            g_PerfGpuHistory[i] = g_PerfGpuHistory[i + 1];
+        }
+        g_PerfCpuHistory[PERF_HISTORY_POINTS - 1] = totalCpuPercent;
+        g_PerfRamHistory[PERF_HISTORY_POINTS - 1] = memPercent;
+        g_PerfGpuHistory[PERF_HISTORY_POINTS - 1] = totalGpuPercent;
+    }
+
+    if (g_hGraphBanner && IsWindow(g_hGraphBanner)) {
+        InvalidateRect(g_hGraphBanner, NULL, FALSE);
+    }
 
     // 2. Filtrage dans la liste tampon (Recherche + Toggle processus Windows + Exclusions par nom)
     g_FilteredCount = 0;

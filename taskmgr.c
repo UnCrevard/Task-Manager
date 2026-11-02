@@ -995,10 +995,41 @@ static void PruneHistory(const DWORD *activePids, int count) {
 }
 
 // ============================================================================
-// Gestion du thème visuel moderne Windows (suppression de l'apparence 98)
+// Gestion du thème visuel moderne Windows (Support Dark Mode complet & Explorer)
 // ============================================================================
 
-// Détection du mode sombre Windows (Windows 10 build 17763+ et Windows 11)
+// Variables et pinceaux GDI pour le mode sombre
+static BOOL g_bDarkModeActive = FALSE;
+static HBRUSH g_hDarkWndBrush = NULL;
+static HBRUSH g_hDarkListBrush = NULL;
+static HBRUSH g_hDarkHeaderBrush = NULL;
+static HBRUSH g_hDarkHeaderHotBrush = NULL;
+static HBRUSH g_hDarkHeaderPressBrush = NULL;
+static HBRUSH g_hDarkEditBrush = NULL;
+static HPEN   g_hDarkBorderPen = NULL;
+
+// Types et pointeurs pour les API UxTheme Dark Mode (Windows 10 1809+ et Windows 11)
+typedef enum {
+    PAM_DEFAULT = 0,
+    PAM_ALLOW_DARK = 1,
+    PAM_FORCE_DARK = 2,
+    PAM_FORCE_LIGHT = 3,
+    PAM_MAX = 4
+} PreferredAppMode;
+
+typedef BOOL (WINAPI *pfnAllowDarkModeForWindow)(HWND hWnd, BOOL allow);
+typedef PreferredAppMode (WINAPI *pfnSetPreferredAppMode)(PreferredAppMode appMode);
+typedef BOOL (WINAPI *pfnAllowDarkModeForApp)(BOOL allow); // Windows 10 1809
+typedef void (WINAPI *pfnRefreshImmersiveColorPolicyState)(void);
+typedef void (WINAPI *pfnFlushMenuThemes)(void);
+
+static pfnAllowDarkModeForWindow g_pfnAllowDarkModeForWindow = NULL;
+static pfnSetPreferredAppMode g_pfnSetPreferredAppMode = NULL;
+static pfnAllowDarkModeForApp g_pfnAllowDarkModeForApp = NULL;
+static pfnRefreshImmersiveColorPolicyState g_pfnRefreshImmersiveColorPolicyState = NULL;
+static pfnFlushMenuThemes g_pfnFlushMenuThemes = NULL;
+
+// Détection du mode sombre Windows via le registre système (Windows 10/11)
 static BOOL IsWindowsDarkModeActive(void) {
     HKEY hKey;
     DWORD val = 1;
@@ -1010,15 +1041,66 @@ static BOOL IsWindowsDarkModeActive(void) {
     return (val == 0);
 }
 
-// Application des attributs DWM modernes (Barre de titre sombre immersive sous Windows 10/11 si activée)
+// Initialisation des ressources graphiques du thème sombre
+static void InitThemeBrushes(void) {
+    if (!g_hDarkWndBrush)         g_hDarkWndBrush         = CreateSolidBrush(RGB(28, 28, 28));
+    if (!g_hDarkListBrush)        g_hDarkListBrush        = CreateSolidBrush(RGB(24, 24, 24));
+    if (!g_hDarkHeaderBrush)      g_hDarkHeaderBrush      = CreateSolidBrush(RGB(38, 38, 38));
+    if (!g_hDarkHeaderHotBrush)   g_hDarkHeaderHotBrush   = CreateSolidBrush(RGB(50, 50, 50));
+    if (!g_hDarkHeaderPressBrush) g_hDarkHeaderPressBrush = CreateSolidBrush(RGB(62, 62, 62));
+    if (!g_hDarkEditBrush)        g_hDarkEditBrush        = CreateSolidBrush(RGB(42, 42, 42));
+    if (!g_hDarkBorderPen)        g_hDarkBorderPen        = CreatePen(PS_SOLID, 1, RGB(58, 58, 60));
+}
+
+// Libération propre des ressources graphiques
+static void FreeThemeBrushes(void) {
+    if (g_hDarkWndBrush)         { DeleteObject(g_hDarkWndBrush); g_hDarkWndBrush = NULL; }
+    if (g_hDarkListBrush)        { DeleteObject(g_hDarkListBrush); g_hDarkListBrush = NULL; }
+    if (g_hDarkHeaderBrush)      { DeleteObject(g_hDarkHeaderBrush); g_hDarkHeaderBrush = NULL; }
+    if (g_hDarkHeaderHotBrush)   { DeleteObject(g_hDarkHeaderHotBrush); g_hDarkHeaderHotBrush = NULL; }
+    if (g_hDarkHeaderPressBrush) { DeleteObject(g_hDarkHeaderPressBrush); g_hDarkHeaderPressBrush = NULL; }
+    if (g_hDarkEditBrush)        { DeleteObject(g_hDarkEditBrush); g_hDarkEditBrush = NULL; }
+    if (g_hDarkBorderPen)        { DeleteObject(g_hDarkBorderPen); g_hDarkBorderPen = NULL; }
+}
+
+// Initialisation des points d'entrée Dark Mode dans uxtheme.dll
+static void InitDarkModeAPIs(void) {
+    static BOOL s_bInitialized = FALSE;
+    if (s_bInitialized) return;
+    s_bInitialized = TRUE;
+
+    HMODULE hUxTheme = LoadLibraryW(L"uxtheme.dll");
+    if (hUxTheme) {
+        g_pfnAllowDarkModeForWindow = (pfnAllowDarkModeForWindow)(void*)GetProcAddress(hUxTheme, MAKEINTRESOURCEA(133));
+        g_pfnSetPreferredAppMode = (pfnSetPreferredAppMode)(void*)GetProcAddress(hUxTheme, MAKEINTRESOURCEA(135));
+        g_pfnAllowDarkModeForApp = (pfnAllowDarkModeForApp)(void*)GetProcAddress(hUxTheme, MAKEINTRESOURCEA(135));
+        g_pfnRefreshImmersiveColorPolicyState = (pfnRefreshImmersiveColorPolicyState)(void*)GetProcAddress(hUxTheme, MAKEINTRESOURCEA(104));
+        g_pfnFlushMenuThemes = (pfnFlushMenuThemes)(void*)GetProcAddress(hUxTheme, MAKEINTRESOURCEA(136));
+
+        if (g_pfnSetPreferredAppMode) {
+            g_pfnSetPreferredAppMode(PAM_ALLOW_DARK);
+        } else if (g_pfnAllowDarkModeForApp) {
+            g_pfnAllowDarkModeForApp(TRUE);
+        }
+
+        if (g_pfnRefreshImmersiveColorPolicyState) {
+            g_pfnRefreshImmersiveColorPolicyState();
+        }
+        if (g_pfnFlushMenuThemes) {
+            g_pfnFlushMenuThemes();
+        }
+    }
+}
+
+// Application des attributs DWM modernes (Barre de titre sombre immersive sous Windows 10/11)
 static void ApplyDwmModernAttributes(HWND hWnd) {
     if (!hWnd) return;
     HMODULE hDwmapi = LoadLibraryW(L"dwmapi.dll");
     if (hDwmapi) {
         typedef HRESULT (WINAPI *pfnDwmSetWindowAttribute)(HWND, DWORD, LPCVOID, DWORD);
-        pfnDwmSetWindowAttribute pDwmSet = (pfnDwmSetWindowAttribute)GetProcAddress(hDwmapi, "DwmSetWindowAttribute");
+        pfnDwmSetWindowAttribute pDwmSet = (pfnDwmSetWindowAttribute)(void*)GetProcAddress(hDwmapi, "DwmSetWindowAttribute");
         if (pDwmSet) {
-            BOOL bDarkMode = IsWindowsDarkModeActive();
+            BOOL bDarkMode = g_bDarkModeActive;
             // DWMWA_USE_IMMERSIVE_DARK_MODE (20 pour Windows 11 et Win 10 2004+, 19 pour Win 10 1809)
             pDwmSet(hWnd, 20, &bDarkMode, sizeof(bDarkMode));
             pDwmSet(hWnd, 19, &bDarkMode, sizeof(bDarkMode));
@@ -1027,31 +1109,205 @@ static void ApplyDwmModernAttributes(HWND hWnd) {
     }
 }
 
-// Application du thème moderne officiel Windows (Explorer style au lieu du style 98)
+// Subclass de l'en-tête (SysHeader32) pour éviter le scintillement d'effacement
+static LRESULT CALLBACK HeaderSubclassProc(
+    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+    (void)uIdSubclass;
+    (void)dwRefData;
+
+    if (uMsg == WM_ERASEBKGND && g_bDarkModeActive) {
+        HDC hdc = (HDC)wParam;
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+        FillRect(hdc, &rc, g_hDarkHeaderBrush);
+        return 1;
+    }
+
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+// Subclass de la ListView (SysListView32) pour le rendu personnalisé moderne des colonnes (en-tête) en mode sombre
+static LRESULT CALLBACK ListViewSubclassProc(
+    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+    (void)uIdSubclass;
+    (void)dwRefData;
+
+    if (uMsg == WM_NOTIFY) {
+        LPNMHDR lpnm = (LPNMHDR)lParam;
+        HWND hHeader = ListView_GetHeader(hWnd);
+        if (hHeader && lpnm->hwndFrom == hHeader && lpnm->code == NM_CUSTOMDRAW) {
+            if (g_bDarkModeActive) {
+                LPNMCUSTOMDRAW pnmcd = (LPNMCUSTOMDRAW)lParam;
+                if (pnmcd->dwDrawStage == CDDS_PREPAINT) {
+                    return CDRF_NOTIFYITEMDRAW | CDRF_NOTIFYPOSTPAINT;
+                }
+                if (pnmcd->dwDrawStage == CDDS_ITEMPREPAINT) {
+                    RECT rc = pnmcd->rc;
+                    int iCol = (int)pnmcd->dwItemSpec;
+
+                    // Choix de la couleur de fond selon l'état (hover, pressé, normal)
+                    HBRUSH hBr = g_hDarkHeaderBrush;
+                    if (pnmcd->uItemState & CDIS_SELECTED) {
+                        hBr = g_hDarkHeaderPressBrush;
+                    } else if (pnmcd->uItemState & CDIS_HOT) {
+                        hBr = g_hDarkHeaderHotBrush;
+                    }
+                    FillRect(pnmcd->hdc, &rc, hBr);
+
+                    // Trait vertical de séparation entre colonnes
+                    HPEN hOldPen = (HPEN)SelectObject(pnmcd->hdc, g_hDarkBorderPen);
+                    MoveToEx(pnmcd->hdc, rc.right - 1, rc.top + 3, NULL);
+                    LineTo(pnmcd->hdc, rc.right - 1, rc.bottom - 3);
+
+                    // Trait inférieur de séparation avec la liste
+                    MoveToEx(pnmcd->hdc, rc.left, rc.bottom - 1, NULL);
+                    LineTo(pnmcd->hdc, rc.right, rc.bottom - 1);
+                    SelectObject(pnmcd->hdc, hOldPen);
+
+                    // Récupération du titre de la colonne (avec flèche ▲ / ▼ de tri)
+                    WCHAR szText[128] = { 0 };
+                    HDITEMW hdi = { 0 };
+                    hdi.mask = HDI_TEXT | HDI_FORMAT;
+                    hdi.pszText = szText;
+                    hdi.cchTextMax = sizeof(szText) / sizeof(WCHAR);
+                    Header_GetItem(hHeader, iCol, &hdi);
+
+                    if (szText[0] == L'\0' && iCol >= 0 && iCol < COL_COUNT) {
+                        if (iCol == g_SortColumn) {
+                            wsprintfW(szText, L"%s %s", s_BaseColumnTitles[iCol], g_bSortAscending ? L"▲" : L"▼");
+                        } else {
+                            wcsncpy_s(szText, 128, s_BaseColumnTitles[iCol], _TRUNCATE);
+                        }
+                    }
+
+                    // Alignement selon la définition de la colonne (droite pour valeurs numériques, gauche pour texte)
+                    DWORD dtFlags = DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS;
+                    if ((hdi.fmt & HDF_JUSTIFYMASK) == HDF_RIGHT) {
+                        dtFlags |= DT_RIGHT;
+                    } else {
+                        dtFlags |= DT_LEFT;
+                    }
+
+                    // Marges intérieures horizontales
+                    rc.left += 8;
+                    rc.right -= 8;
+
+                    HFONT hOldFont = NULL;
+                    if (g_hFont) {
+                        hOldFont = (HFONT)SelectObject(pnmcd->hdc, g_hFont);
+                    }
+
+                    // Rendu du texte en blanc éclatant lisible sur fond sombre
+                    SetTextColor(pnmcd->hdc, RGB(235, 235, 235));
+                    SetBkMode(pnmcd->hdc, TRANSPARENT);
+                    DrawTextW(pnmcd->hdc, szText, -1, &rc, dtFlags);
+
+                    if (hOldFont) {
+                        SelectObject(pnmcd->hdc, hOldFont);
+                    }
+
+                    return CDRF_SKIPDEFAULT;
+                }
+                if (pnmcd->dwDrawStage == CDDS_POSTPAINT) {
+                    // Remplissage de l'espace restant à droite de la dernière colonne
+                    int count = Header_GetItemCount(hHeader);
+                    if (count > 0) {
+                        RECT rcLast;
+                        if (Header_GetItemRect(hHeader, count - 1, &rcLast)) {
+                            RECT rcClient;
+                            GetClientRect(hHeader, &rcClient);
+                            if (rcLast.right < rcClient.right) {
+                                RECT rcFill = { rcLast.right, 0, rcClient.right, rcClient.bottom };
+                                FillRect(pnmcd->hdc, &rcFill, g_hDarkHeaderBrush);
+
+                                HPEN hOldPen = (HPEN)SelectObject(pnmcd->hdc, g_hDarkBorderPen);
+                                MoveToEx(pnmcd->hdc, rcFill.left, rcFill.bottom - 1, NULL);
+                                LineTo(pnmcd->hdc, rcFill.right, rcFill.bottom - 1);
+                                SelectObject(pnmcd->hdc, hOldPen);
+                            }
+                        }
+                    }
+                    return CDRF_DODEFAULT;
+                }
+            }
+        }
+    }
+
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+// Application du thème moderne officiel Windows (Mode sombre dynamique et Explorer moderne)
 static void ApplyModernWindowsTheme(HWND hWnd, HWND hListView) {
+    g_bDarkModeActive = IsWindowsDarkModeActive();
+    InitThemeBrushes();
+    InitDarkModeAPIs();
+
+    if (g_pfnAllowDarkModeForWindow) {
+        if (hWnd) g_pfnAllowDarkModeForWindow(hWnd, g_bDarkModeActive);
+        if (hListView) {
+            g_pfnAllowDarkModeForWindow(hListView, g_bDarkModeActive);
+            HWND hHeader = ListView_GetHeader(hListView);
+            if (hHeader) g_pfnAllowDarkModeForWindow(hHeader, g_bDarkModeActive);
+        }
+        if (g_hStatusBar) g_pfnAllowDarkModeForWindow(g_hStatusBar, g_bDarkModeActive);
+        if (g_hBtnRefresh) g_pfnAllowDarkModeForWindow(g_hBtnRefresh, g_bDarkModeActive);
+        if (g_hBtnAutoRefresh) g_pfnAllowDarkModeForWindow(g_hBtnAutoRefresh, g_bDarkModeActive);
+        if (g_hBtnKill) g_pfnAllowDarkModeForWindow(g_hBtnKill, g_bDarkModeActive);
+        if (g_hBtnHideWindows) g_pfnAllowDarkModeForWindow(g_hBtnHideWindows, g_bDarkModeActive);
+        if (g_hBtnExclusions) g_pfnAllowDarkModeForWindow(g_hBtnExclusions, g_bDarkModeActive);
+        if (g_hEditSearch) g_pfnAllowDarkModeForWindow(g_hEditSearch, g_bDarkModeActive);
+    }
+
     HMODULE hUxTheme = LoadLibraryW(L"uxtheme.dll");
     if (hUxTheme) {
         typedef HRESULT (WINAPI *pfnSetWindowTheme)(HWND, LPCWSTR, LPCWSTR);
-        pfnSetWindowTheme pSetWindowTheme = (pfnSetWindowTheme)GetProcAddress(hUxTheme, "SetWindowTheme");
-        if (pSetWindowTheme && hListView) {
-            BOOL bDarkMode = IsWindowsDarkModeActive();
-            // Utiliser le thème Explorer officiel de Windows (rendu moderne avec survol et sélection bleutée translucide)
-            if (bDarkMode) {
-                pSetWindowTheme(hListView, L"DarkMode_Explorer", NULL);
-            } else {
-                pSetWindowTheme(hListView, L"Explorer", NULL);
-            }
-            HWND hHeader = ListView_GetHeader(hListView);
-            if (hHeader) {
-                if (bDarkMode) {
-                    pSetWindowTheme(hHeader, L"DarkMode_ItemsView", NULL);
+        pfnSetWindowTheme pSetWindowTheme = (pfnSetWindowTheme)(void*)GetProcAddress(hUxTheme, "SetWindowTheme");
+        if (pSetWindowTheme) {
+            if (hListView) {
+                HWND hHeader = ListView_GetHeader(hListView);
+                if (g_bDarkModeActive) {
+                    pSetWindowTheme(hListView, L"DarkMode_Explorer", NULL);
+                    // Crucial : Ne PAS appliquer DarkMode_ItemsView sur hHeader car UxTheme
+                    // peint l'en-tête en noir opaque sur Windows 10/11 sans dessiner le texte en blanc.
+                    // Notre custom draw assure un rendu de colonnes moderne, contrasté et lisible.
+                    pSetWindowTheme(hHeader, L"", L"");
+                    ListView_SetBkColor(hListView, RGB(24, 24, 24));
+                    ListView_SetTextBkColor(hListView, RGB(24, 24, 24));
+                    ListView_SetTextColor(hListView, RGB(240, 240, 240));
                 } else {
+                    pSetWindowTheme(hListView, L"Explorer", NULL);
                     pSetWindowTheme(hHeader, L"Explorer", NULL);
+                    ListView_SetBkColor(hListView, RGB(255, 255, 255));
+                    ListView_SetTextBkColor(hListView, CLR_NONE);
+                    ListView_SetTextColor(hListView, RGB(0, 0, 0));
                 }
+            }
+
+            if (g_hStatusBar) {
+                if (g_bDarkModeActive) {
+                    pSetWindowTheme(g_hStatusBar, L"DarkMode_Explorer", NULL);
+                    SendMessageW(g_hStatusBar, SB_SETBKCOLOR, 0, (LPARAM)RGB(32, 32, 32));
+                } else {
+                    pSetWindowTheme(g_hStatusBar, L"Explorer", NULL);
+                    SendMessageW(g_hStatusBar, SB_SETBKCOLOR, 0, (LPARAM)CLR_DEFAULT);
+                }
+            }
+
+            if (g_hEditSearch) {
+                pSetWindowTheme(g_hEditSearch, g_bDarkModeActive ? L"DarkMode_CFD" : L"Explorer", NULL);
             }
         }
         FreeLibrary(hUxTheme);
     }
+
+    if (hWnd) {
+        SetClassLongPtr(hWnd, GCLP_HBRBACKGROUND, (LONG_PTR)(g_bDarkModeActive ? g_hDarkWndBrush : (HBRUSH)(COLOR_BTNFACE + 1)));
+    }
+
     ApplyDwmModernAttributes(hWnd);
 }
 
@@ -1086,6 +1342,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         g_hAppIconSm = CreateTaskManagerAppIcon(16);
     }
 
+    InitDarkModeAPIs();
+    g_bDarkModeActive = IsWindowsDarkModeActive();
+    InitThemeBrushes();
+
     const WCHAR CLASS_NAME[] = L"Win32NativeTaskManager";
     WNDCLASSEXW wc = { 0 };
     wc.cbSize = sizeof(WNDCLASSEXW);
@@ -1094,7 +1354,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.hInstance = hInstance;
     wc.hIcon = g_hAppIcon ? g_hAppIcon : LoadIcon(NULL, IDI_APPLICATION);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.hbrBackground = g_bDarkModeActive ? g_hDarkWndBrush : (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = CLASS_NAME;
     wc.hIconSm = g_hAppIconSm ? g_hAppIconSm : LoadIcon(NULL, IDI_APPLICATION);
 
@@ -1260,13 +1520,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         InitListViewColumns(g_hListView);
 
-        // Application du thème visuel moderne Explorer et police sur l'en-tête
-        ApplyModernWindowsTheme(hWnd, g_hListView);
-        HWND hHeader = ListView_GetHeader(g_hListView);
-        if (hHeader) {
-            SendMessage(hHeader, WM_SETFONT, (WPARAM)hFont, TRUE);
-        }
-
         // 8. Barre d'état StatusBar
         g_hStatusBar = CreateWindowExW(
             0, STATUSCLASSNAMEW, NULL,
@@ -1278,6 +1531,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         int statusParts[5] = { 200, 360, 580, 840, -1 };
         SendMessage(g_hStatusBar, SB_SETPARTS, 5, (LPARAM)statusParts);
+
+        // Subclass pour le rendu moderne sombre des colonnes et de l'en-tête (zéro colonnes noires)
+        SetWindowSubclass(g_hListView, ListViewSubclassProc, 1, 0);
+        HWND hHeader = ListView_GetHeader(g_hListView);
+        if (hHeader) {
+            SendMessage(hHeader, WM_SETFONT, (WPARAM)hFont, TRUE);
+            SetWindowSubclass(hHeader, HeaderSubclassProc, 2, 0);
+        }
+
+        // Application du thème visuel moderne Explorer et Dark Mode pour tous les contrôles
+        ApplyModernWindowsTheme(hWnd, g_hListView);
 
         return 0;
     }
@@ -1556,6 +1820,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     case WM_NOTIFY: {
         LPNMHDR lpnm = (LPNMHDR)lParam;
         if (lpnm->idFrom == IDC_LISTVIEW) {
+            // RENDU PERSONNALISÉ DES LIGNES EN MODE SOMBRE (TEXTE BLANC & FOND SOMBRE LISIBLE)
+            if (lpnm->code == NM_CUSTOMDRAW) {
+                LPNMLVCUSTOMDRAW lplvcd = (LPNMLVCUSTOMDRAW)lParam;
+                if (lplvcd->nmcd.dwDrawStage == CDDS_PREPAINT) {
+                    return CDRF_NOTIFYITEMDRAW;
+                }
+                if (lplvcd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
+                    if (g_bDarkModeActive) {
+                        // Alternance subtile de gris sombre pour une lisibilité parfaite des lignes
+                        if ((lplvcd->nmcd.dwItemSpec % 2) == 1) {
+                            lplvcd->clrTextBk = RGB(30, 30, 30);
+                        } else {
+                            lplvcd->clrTextBk = RGB(24, 24, 24);
+                        }
+                        lplvcd->clrText = RGB(240, 240, 240);
+                    } else {
+                        lplvcd->clrTextBk = RGB(255, 255, 255);
+                        lplvcd->clrText = RGB(0, 0, 0);
+                    }
+                    return CDRF_NEWFONT;
+                }
+            }
+
             // CLIC SUR UN EN-TÊTE DE COLONNE -> TRI DES PROCESSUS
             if (lpnm->code == LVN_COLUMNCLICK) {
                 LPNMLISTVIEW pnmv = (LPNMLISTVIEW)lParam;
@@ -1625,21 +1912,55 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
 
+    case WM_ERASEBKGND: {
+        HDC hdc = (HDC)wParam;
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+        HBRUSH hBr = g_bDarkModeActive ? g_hDarkWndBrush : GetSysColorBrush(COLOR_BTNFACE);
+        FillRect(hdc, &rc, hBr);
+        return 1;
+    }
+
     case WM_CTLCOLORSTATIC: {
-        // Fond transparent pour le label 'Filtrer :' afin qu'il s'intègre au fond natif Windows
+        // Fond transparent pour le label 'Filtrer :' adapté au mode sombre
         HDC hdcStatic = (HDC)wParam;
         SetBkMode(hdcStatic, TRANSPARENT);
-        return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        if (g_bDarkModeActive) {
+            SetTextColor(hdcStatic, RGB(225, 225, 225));
+            return (LRESULT)g_hDarkWndBrush;
+        } else {
+            SetTextColor(hdcStatic, GetSysColor(COLOR_WINDOWTEXT));
+            return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+    }
+
+    case WM_CTLCOLOREDIT: {
+        // Boîte de recherche adaptée au mode sombre
+        HDC hdcEdit = (HDC)wParam;
+        if (g_bDarkModeActive) {
+            SetTextColor(hdcEdit, RGB(245, 245, 245));
+            SetBkColor(hdcEdit, RGB(42, 42, 42));
+            return (LRESULT)g_hDarkEditBrush;
+        }
+        return DefWindowProcW(hWnd, message, wParam, lParam);
     }
 
     case WM_THEMECHANGED:
     case WM_SETTINGCHANGE:
-        // Réaction dynamique si l'utilisateur change de thème ou de mode sombre Windows
+        // Réaction dynamique si l'utilisateur change de thème ou bascule en Dark Mode Windows
         ApplyModernWindowsTheme(hWnd, g_hListView);
-        InvalidateRect(hWnd, NULL, TRUE);
+        RedrawWindow(hWnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
         return 0;
 
     case WM_DESTROY:
+        if (g_hListView) {
+            RemoveWindowSubclass(g_hListView, ListViewSubclassProc, 1);
+            HWND hHeader = ListView_GetHeader(g_hListView);
+            if (hHeader) {
+                RemoveWindowSubclass(hHeader, HeaderSubclassProc, 2);
+            }
+        }
+        FreeThemeBrushes();
         RemoveAllTrayIcons();
         if (g_hAppIcon) {
             DestroyIcon(g_hAppIcon);

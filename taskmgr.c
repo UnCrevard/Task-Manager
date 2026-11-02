@@ -1947,7 +1947,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         // 1. Bouton Auto-Refresh (reprend l'état chargé de settings.ini)
         g_hBtnAutoRefresh = CreateWindowExW(
             0, L"BUTTON",
-            g_bAutoRefresh ? L"Auto-refresh: ACTIF (1s)" : L"Auto-refresh: PAUSE",
+            g_bAutoRefresh ? L"Auto-refresh Oui" : L"Auto-refresh Non",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             10, 10, 160, 28,
             hWnd, (HMENU)IDC_BTN_AUTOREFRESH, GetModuleHandle(NULL), NULL
@@ -1964,18 +1964,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         SendMessage(g_hBtnRefresh, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         // 3. Bouton Tuer Immédiatement
+        /*
         g_hBtnKill = CreateWindowExW(
-            0, L"BUTTON", L"Tuer Immédiatement (Suppr)",
+            0, L"BUTTON", L"Terminer (Suppr)",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             285, 10, 175, 28,
             hWnd, (HMENU)IDC_BTN_KILL, GetModuleHandle(NULL), NULL
         );
         SendMessage(g_hBtnKill, WM_SETFONT, (WPARAM)hFont, TRUE);
+        */
 
         // 4. Toggle pour Masquer les Processus Windows de Base
         g_hBtnHideWindows = CreateWindowExW(
             0, L"BUTTON",
-            g_bHideWindowsProcesses ? L"Processus Windows: MASQUÉS" : L"Processus Windows: AFFICHÉS",
+            g_bHideWindowsProcesses ? L"Windows Non" : L"Windows Oui",
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
             465, 10, 185, 28,
             hWnd, (HMENU)IDC_BTN_HIDE_WINDOWS, GetModuleHandle(NULL), NULL
@@ -2164,10 +2166,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             g_bAutoRefresh = !g_bAutoRefresh;
             if (g_bAutoRefresh) {
                 SetTimer(hWnd, IDT_REFRESH_TIMER, REFRESH_INTERVAL_MS, NULL);
-                SetWindowTextW(g_hBtnAutoRefresh, L"Auto-refresh: ACTIF (1s)");
+                SetWindowTextW(g_hBtnAutoRefresh, L"Auto-refresh Oui");
             } else {
                 KillTimer(hWnd, IDT_REFRESH_TIMER);
-                SetWindowTextW(g_hBtnAutoRefresh, L"Auto-refresh: PAUSE");
+                SetWindowTextW(g_hBtnAutoRefresh, L"Auto-refresh Non");
             }
             SaveSettings();
             break;
@@ -2179,9 +2181,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         case IDC_BTN_HIDE_WINDOWS:
             g_bHideWindowsProcesses = !g_bHideWindowsProcesses;
             if (g_bHideWindowsProcesses) {
-                SetWindowTextW(g_hBtnHideWindows, L"Processus Windows: MASQUÉS");
+                SetWindowTextW(g_hBtnHideWindows, L"Windows Non");
             } else {
-                SetWindowTextW(g_hBtnHideWindows, L"Processus Windows: AFFICHÉS");
+                SetWindowTextW(g_hBtnHideWindows, L"Windows Oui");
             }
             SaveSettings();
             RefreshProcessList();
@@ -2748,7 +2750,7 @@ void UpdateStatusBar(int displayedCount, int totalCount, double totalCpu) {
     );
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 3, (LPARAM)szText);
 
-    SendMessageW(g_hStatusBar, SB_SETTEXTW, 4, (LPARAM)L"Fermer: Réduire en Tray | Suppr: Tuer");
+    // SendMessageW(g_hStatusBar, SB_SETTEXTW, 4, (LPARAM)L"Fermer: Réduire en Tray | Suppr: Tuer");
 
     if (g_bDarkModeActive && g_hStatusBar) {
         InvalidateRect(g_hStatusBar, NULL, FALSE);

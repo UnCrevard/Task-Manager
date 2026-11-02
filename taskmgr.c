@@ -1041,15 +1041,15 @@ static BOOL IsWindowsDarkModeActive(void) {
     return (val == 0);
 }
 
-// Initialisation des ressources graphiques du thème sombre
+// Initialisation des ressources graphiques du thème sombre (teintes feutrées et confortables)
 static void InitThemeBrushes(void) {
-    if (!g_hDarkWndBrush)         g_hDarkWndBrush         = CreateSolidBrush(RGB(28, 28, 28));
-    if (!g_hDarkListBrush)        g_hDarkListBrush        = CreateSolidBrush(RGB(24, 24, 24));
-    if (!g_hDarkHeaderBrush)      g_hDarkHeaderBrush      = CreateSolidBrush(RGB(38, 38, 38));
-    if (!g_hDarkHeaderHotBrush)   g_hDarkHeaderHotBrush   = CreateSolidBrush(RGB(50, 50, 50));
-    if (!g_hDarkHeaderPressBrush) g_hDarkHeaderPressBrush = CreateSolidBrush(RGB(62, 62, 62));
-    if (!g_hDarkEditBrush)        g_hDarkEditBrush        = CreateSolidBrush(RGB(42, 42, 42));
-    if (!g_hDarkBorderPen)        g_hDarkBorderPen        = CreatePen(PS_SOLID, 1, RGB(58, 58, 60));
+    if (!g_hDarkWndBrush)         g_hDarkWndBrush         = CreateSolidBrush(RGB(32, 33, 38));
+    if (!g_hDarkListBrush)        g_hDarkListBrush        = CreateSolidBrush(RGB(36, 38, 44));
+    if (!g_hDarkHeaderBrush)      g_hDarkHeaderBrush      = CreateSolidBrush(RGB(46, 48, 56));
+    if (!g_hDarkHeaderHotBrush)   g_hDarkHeaderHotBrush   = CreateSolidBrush(RGB(56, 59, 70));
+    if (!g_hDarkHeaderPressBrush) g_hDarkHeaderPressBrush = CreateSolidBrush(RGB(66, 70, 84));
+    if (!g_hDarkEditBrush)        g_hDarkEditBrush        = CreateSolidBrush(RGB(42, 44, 52));
+    if (!g_hDarkBorderPen)        g_hDarkBorderPen        = CreatePen(PS_SOLID, 1, RGB(62, 65, 76));
 }
 
 // Libération propre des ressources graphiques
@@ -1107,6 +1107,212 @@ static void ApplyDwmModernAttributes(HWND hWnd) {
         }
         FreeLibrary(hDwmapi);
     }
+}
+
+// Subclass des boutons pour un rendu sombre mat, feutré et non éblouissant
+static LRESULT CALLBACK ButtonSubclassProc(
+    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+    (void)uIdSubclass;
+    (void)dwRefData;
+
+    if (!g_bDarkModeActive) {
+        return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+    }
+
+    switch (uMsg) {
+    case WM_ERASEBKGND:
+        return 1;
+
+    case WM_MOUSEMOVE: {
+        TRACKMOUSEEVENT tme;
+        tme.cbSize = sizeof(TRACKMOUSEEVENT);
+        tme.dwFlags = TME_LEAVE;
+        tme.hwndTrack = hWnd;
+        tme.dwHoverTime = 0;
+        TrackMouseEvent(&tme);
+        InvalidateRect(hWnd, NULL, FALSE);
+        break;
+    }
+
+    case WM_MOUSELEAVE:
+    case WM_SETFOCUS:
+    case WM_KILLFOCUS:
+    case WM_ENABLE:
+        InvalidateRect(hWnd, NULL, FALSE);
+        break;
+
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        RECT rc;
+        GetClientRect(hWnd, &rc);
+
+        HDC hMemDC = CreateCompatibleDC(hdc);
+        HBITMAP hMemBmp = CreateCompatibleBitmap(hdc, rc.right, rc.bottom);
+        HBITMAP hOldBmp = (HBITMAP)SelectObject(hMemDC, hMemBmp);
+
+        // État de survol et de clic
+        POINT pt;
+        GetCursorPos(&pt);
+        ScreenToClient(hWnd, &pt);
+        BOOL bHover = PtInRect(&rc, pt);
+        LRESULT state = SendMessageW(hWnd, BM_GETSTATE, 0, 0);
+        BOOL bPressed = (state & BST_PUSHED) != 0;
+
+        LONG_PTR ctrlId = GetWindowLongPtrW(hWnd, GWLP_ID);
+        BOOL isKill = (ctrlId == IDC_BTN_KILL);
+
+        COLORREF clrBg, clrBorder, clrText;
+        if (isKill) {
+            // Teinte bordeaux sombre, douce et mate pour le bouton Tuer (sans éclat agressif)
+            if (bPressed) {
+                clrBg = RGB(50, 22, 25);
+                clrBorder = RGB(105, 46, 52);
+                clrText = RGB(240, 185, 190);
+            } else if (bHover) {
+                clrBg = RGB(75, 30, 35);
+                clrBorder = RGB(125, 52, 58);
+                clrText = RGB(245, 200, 205);
+            } else {
+                clrBg = RGB(60, 25, 28);
+                clrBorder = RGB(92, 40, 45);
+                clrText = RGB(225, 170, 175);
+            }
+        } else {
+            // Boutons d'action standards : gris ardoise mat, contours adoucis, texte non éblouissant
+            if (bPressed) {
+                clrBg = RGB(36, 38, 44);
+                clrBorder = RGB(72, 76, 88);
+                clrText = RGB(230, 233, 240);
+            } else if (bHover) {
+                clrBg = RGB(52, 55, 64);
+                clrBorder = RGB(82, 87, 100);
+                clrText = RGB(235, 238, 245);
+            } else {
+                clrBg = RGB(43, 45, 52);
+                clrBorder = RGB(64, 67, 78);
+                clrText = RGB(210, 214, 222);
+            }
+        }
+
+        // Fond et bordure
+        HBRUSH hBrBg = CreateSolidBrush(clrBg);
+        HPEN hPenBorder = CreatePen(PS_SOLID, 1, clrBorder);
+        HBRUSH hOldBr = (HBRUSH)SelectObject(hMemDC, hBrBg);
+        HPEN hOldPen = (HPEN)SelectObject(hMemDC, hPenBorder);
+
+        RoundRect(hMemDC, rc.left, rc.top, rc.right, rc.bottom, 6, 6);
+
+        SelectObject(hMemDC, hOldBr);
+        SelectObject(hMemDC, hOldPen);
+        DeleteObject(hBrBg);
+        DeleteObject(hPenBorder);
+
+        // Texte du bouton
+        WCHAR szText[128] = { 0 };
+        GetWindowTextW(hWnd, szText, sizeof(szText) / sizeof(WCHAR));
+
+        SetBkMode(hMemDC, TRANSPARENT);
+        SetTextColor(hMemDC, clrText);
+        HFONT hOldFont = NULL;
+        if (g_hFont) hOldFont = (HFONT)SelectObject(hMemDC, g_hFont);
+
+        DrawTextW(hMemDC, szText, -1, &rc, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+
+        if (hOldFont) SelectObject(hMemDC, hOldFont);
+
+        BitBlt(hdc, 0, 0, rc.right, rc.bottom, hMemDC, 0, 0, SRCCOPY);
+        SelectObject(hMemDC, hOldBmp);
+        DeleteObject(hMemBmp);
+        DeleteDC(hMemDC);
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+    }
+
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+}
+
+// Subclass de la barre d'état (StatusBar) : fond feutré, sans bordures blanches 3D et texte atténué
+static LRESULT CALLBACK StatusBarSubclassProc(
+    HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
+    UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
+{
+    (void)uIdSubclass;
+    (void)dwRefData;
+
+    if (!g_bDarkModeActive) {
+        return DefSubclassProc(hWnd, uMsg, wParam, lParam);
+    }
+
+    if (uMsg == WM_ERASEBKGND) {
+        return 1;
+    }
+
+    if (uMsg == WM_PAINT) {
+        PAINTSTRUCT ps;
+        HDC hdc = BeginPaint(hWnd, &ps);
+        RECT rcClient;
+        GetClientRect(hWnd, &rcClient);
+
+        HDC hMemDC = CreateCompatibleDC(hdc);
+        HBITMAP hMemBmp = CreateCompatibleBitmap(hdc, rcClient.right, rcClient.bottom);
+        HBITMAP hOldBmp = (HBITMAP)SelectObject(hMemDC, hMemBmp);
+
+        // Fond sombre feutré et non éblouissant
+        HBRUSH hBrBg = CreateSolidBrush(RGB(28, 29, 34));
+        FillRect(hMemDC, &rcClient, hBrBg);
+        DeleteObject(hBrBg);
+
+        // Trait supérieur discret de démarcation
+        HPEN hSepPen = CreatePen(PS_SOLID, 1, RGB(46, 48, 56));
+        HPEN hOldPen = (HPEN)SelectObject(hMemDC, hSepPen);
+        MoveToEx(hMemDC, 0, 0, NULL);
+        LineTo(hMemDC, rcClient.right, 0);
+
+        HFONT hOldFont = NULL;
+        if (g_hFont) hOldFont = (HFONT)SelectObject(hMemDC, g_hFont);
+        SetBkMode(hMemDC, TRANSPARENT);
+        // Couleur de texte feutrée (gris doux anti-éblouissement)
+        SetTextColor(hMemDC, RGB(168, 172, 182));
+
+        int nParts = (int)SendMessageW(hWnd, SB_GETPARTS, 0, 0);
+        for (int i = 0; i < nParts; i++) {
+            RECT rcPart;
+            SendMessageW(hWnd, SB_GETRECT, i, (LPARAM)&rcPart);
+
+            // Séparateurs verticaux subtils entre sections
+            if (i > 0) {
+                MoveToEx(hMemDC, rcPart.left, rcPart.top + 3, NULL);
+                LineTo(hMemDC, rcPart.left, rcPart.bottom - 3);
+            }
+
+            WCHAR szPartText[256] = { 0 };
+            SendMessageW(hWnd, SB_GETTEXTW, i, (LPARAM)szPartText);
+
+            if (szPartText[0] != L'\0') {
+                RECT rcText = rcPart;
+                rcText.left += 8;
+                rcText.right -= 8;
+                DrawTextW(hMemDC, szPartText, -1, &rcText, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+            }
+        }
+
+        SelectObject(hMemDC, hOldPen);
+        DeleteObject(hSepPen);
+        if (hOldFont) SelectObject(hMemDC, hOldFont);
+
+        BitBlt(hdc, 0, 0, rcClient.right, rcClient.bottom, hMemDC, 0, 0, SRCCOPY);
+        SelectObject(hMemDC, hOldBmp);
+        DeleteObject(hMemBmp);
+        DeleteDC(hMemDC);
+        EndPaint(hWnd, &ps);
+        return 0;
+    }
+
+    return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
 // Subclass de l'en-tête (SysHeader32) pour éviter le scintillement d'effacement
@@ -1201,8 +1407,8 @@ static LRESULT CALLBACK ListViewSubclassProc(
                         hOldFont = (HFONT)SelectObject(pnmcd->hdc, g_hFont);
                     }
 
-                    // Rendu du texte en blanc éclatant lisible sur fond sombre
-                    SetTextColor(pnmcd->hdc, RGB(235, 235, 235));
+                    // Rendu du texte des en-têtes en teinte douce et lisible
+                    SetTextColor(pnmcd->hdc, RGB(228, 230, 236));
                     SetBkMode(pnmcd->hdc, TRANSPARENT);
                     DrawTextW(pnmcd->hdc, szText, -1, &rc, dtFlags);
 
@@ -1275,9 +1481,9 @@ static void ApplyModernWindowsTheme(HWND hWnd, HWND hListView) {
                     // peint l'en-tête en noir opaque sur Windows 10/11 sans dessiner le texte en blanc.
                     // Notre custom draw assure un rendu de colonnes moderne, contrasté et lisible.
                     pSetWindowTheme(hHeader, L"", L"");
-                    ListView_SetBkColor(hListView, RGB(24, 24, 24));
-                    ListView_SetTextBkColor(hListView, RGB(24, 24, 24));
-                    ListView_SetTextColor(hListView, RGB(240, 240, 240));
+                    ListView_SetBkColor(hListView, RGB(36, 38, 44));
+                    ListView_SetTextBkColor(hListView, RGB(36, 38, 44));
+                    ListView_SetTextColor(hListView, RGB(242, 244, 248));
                 } else {
                     pSetWindowTheme(hListView, L"Explorer", NULL);
                     pSetWindowTheme(hHeader, L"Explorer", NULL);
@@ -1290,7 +1496,7 @@ static void ApplyModernWindowsTheme(HWND hWnd, HWND hListView) {
             if (g_hStatusBar) {
                 if (g_bDarkModeActive) {
                     pSetWindowTheme(g_hStatusBar, L"DarkMode_Explorer", NULL);
-                    SendMessageW(g_hStatusBar, SB_SETBKCOLOR, 0, (LPARAM)RGB(32, 32, 32));
+                    SendMessageW(g_hStatusBar, SB_SETBKCOLOR, 0, (LPARAM)RGB(28, 29, 34));
                 } else {
                     pSetWindowTheme(g_hStatusBar, L"Explorer", NULL);
                     SendMessageW(g_hStatusBar, SB_SETBKCOLOR, 0, (LPARAM)CLR_DEFAULT);
@@ -1539,6 +1745,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             SendMessage(hHeader, WM_SETFONT, (WPARAM)hFont, TRUE);
             SetWindowSubclass(hHeader, HeaderSubclassProc, 2, 0);
         }
+
+        // Subclass des boutons pour un rendu sombre mat, feutré et non éblouissant
+        SetWindowSubclass(g_hBtnAutoRefresh, ButtonSubclassProc, 10, 0);
+        SetWindowSubclass(g_hBtnRefresh, ButtonSubclassProc, 11, 0);
+        SetWindowSubclass(g_hBtnKill, ButtonSubclassProc, 12, 0);
+        SetWindowSubclass(g_hBtnHideWindows, ButtonSubclassProc, 13, 0);
+        SetWindowSubclass(g_hBtnExclusions, ButtonSubclassProc, 14, 0);
+
+        // Subclass de la barre d'état pour adoucir la luminosité et supprimer les bordures blanches 3D
+        SetWindowSubclass(g_hStatusBar, StatusBarSubclassProc, 20, 0);
 
         // Application du thème visuel moderne Explorer et Dark Mode pour tous les contrôles
         ApplyModernWindowsTheme(hWnd, g_hListView);
@@ -1828,13 +2044,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 }
                 if (lplvcd->nmcd.dwDrawStage == CDDS_ITEMPREPAINT) {
                     if (g_bDarkModeActive) {
-                        // Alternance subtile de gris sombre pour une lisibilité parfaite des lignes
+                        // Alternance subtile de gris ardoise feutré pour une lisibilité optimale sans noir agressif
                         if ((lplvcd->nmcd.dwItemSpec % 2) == 1) {
-                            lplvcd->clrTextBk = RGB(30, 30, 30);
+                            lplvcd->clrTextBk = RGB(42, 44, 52);
                         } else {
-                            lplvcd->clrTextBk = RGB(24, 24, 24);
+                            lplvcd->clrTextBk = RGB(36, 38, 44);
                         }
-                        lplvcd->clrText = RGB(240, 240, 240);
+                        lplvcd->clrText = RGB(242, 244, 248);
                     } else {
                         lplvcd->clrTextBk = RGB(255, 255, 255);
                         lplvcd->clrText = RGB(0, 0, 0);
@@ -1922,11 +2138,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     }
 
     case WM_CTLCOLORSTATIC: {
-        // Fond transparent pour le label 'Filtrer :' adapté au mode sombre
+        // Fond transparent pour le label 'Filtrer :' adapté au mode sombre feutré
         HDC hdcStatic = (HDC)wParam;
         SetBkMode(hdcStatic, TRANSPARENT);
         if (g_bDarkModeActive) {
-            SetTextColor(hdcStatic, RGB(225, 225, 225));
+            SetTextColor(hdcStatic, RGB(200, 203, 212));
             return (LRESULT)g_hDarkWndBrush;
         } else {
             SetTextColor(hdcStatic, GetSysColor(COLOR_WINDOWTEXT));
@@ -1935,11 +2151,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     }
 
     case WM_CTLCOLOREDIT: {
-        // Boîte de recherche adaptée au mode sombre
+        // Boîte de recherche adaptée au mode sombre feutré
         HDC hdcEdit = (HDC)wParam;
         if (g_bDarkModeActive) {
-            SetTextColor(hdcEdit, RGB(245, 245, 245));
-            SetBkColor(hdcEdit, RGB(42, 42, 42));
+            SetTextColor(hdcEdit, RGB(242, 244, 248));
+            SetBkColor(hdcEdit, RGB(42, 44, 52));
             return (LRESULT)g_hDarkEditBrush;
         }
         return DefWindowProcW(hWnd, message, wParam, lParam);
@@ -1960,6 +2176,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                 RemoveWindowSubclass(hHeader, HeaderSubclassProc, 2);
             }
         }
+        if (g_hBtnAutoRefresh) RemoveWindowSubclass(g_hBtnAutoRefresh, ButtonSubclassProc, 10);
+        if (g_hBtnRefresh)     RemoveWindowSubclass(g_hBtnRefresh, ButtonSubclassProc, 11);
+        if (g_hBtnKill)        RemoveWindowSubclass(g_hBtnKill, ButtonSubclassProc, 12);
+        if (g_hBtnHideWindows) RemoveWindowSubclass(g_hBtnHideWindows, ButtonSubclassProc, 13);
+        if (g_hBtnExclusions)  RemoveWindowSubclass(g_hBtnExclusions, ButtonSubclassProc, 14);
+        if (g_hStatusBar)      RemoveWindowSubclass(g_hStatusBar, StatusBarSubclassProc, 20);
+
         FreeThemeBrushes();
         RemoveAllTrayIcons();
         if (g_hAppIcon) {
@@ -2196,6 +2419,10 @@ void UpdateStatusBar(int displayedCount, int totalCount, double totalCpu) {
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 3, (LPARAM)szText);
 
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 4, (LPARAM)L"Fermer: Réduire en Tray | Suppr: Tuer");
+
+    if (g_bDarkModeActive && g_hStatusBar) {
+        InvalidateRect(g_hStatusBar, NULL, FALSE);
+    }
 }
 
 // Rafraîchissement différentiel optimisé SANS scintillement

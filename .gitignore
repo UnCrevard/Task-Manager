@@ -7,3 +7,6 @@ src/
 index.html
 *.json
 *.ts
+
+settings.ini
+*.o

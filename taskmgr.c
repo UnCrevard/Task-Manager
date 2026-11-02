@@ -233,6 +233,10 @@ static HFONT g_hFont = NULL;
 static HFONT g_hFontBold = NULL;
 static HFONT g_hFontSmall = NULL;
 
+// Instance unique (Single Instance)
+static HANDLE g_hSingleInstanceMutex = NULL;
+static UINT g_uMsgRestoreInstance = 0;
+
 // Pointeur dynamique vers NtQueryInformationProcess
 typedef NTSTATUS (NTAPI *pfnNtQueryInformationProcess)(
     HANDLE ProcessHandle,
@@ -1766,6 +1770,32 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     (void)hPrevInstance;
     (void)lpCmdLine;
 
+    // 1. Forcer une instance unique de l'application via un Mutex nommé
+    const WCHAR MUTEX_NAME[] = L"Local\\TaskManager_SingleInstance_Mutex_9D4F2";
+    g_uMsgRestoreInstance = RegisterWindowMessageW(L"WM_TASKMGR_RESTORE_INSTANCE");
+
+    HANDLE hMutex = CreateMutexW(NULL, TRUE, MUTEX_NAME);
+    if (GetLastError() == ERROR_ALREADY_EXISTS) {
+        // Une instance est déjà en cours d'exécution : réactiver sa fenêtre au premier plan
+        HWND hExistingWnd = FindWindowW(L"Win32NativeTaskManager", NULL);
+        if (hExistingWnd) {
+            if (g_uMsgRestoreInstance != 0) {
+                PostMessageW(hExistingWnd, g_uMsgRestoreInstance, 0, 0);
+            }
+            if (IsIconic(hExistingWnd)) {
+                ShowWindow(hExistingWnd, SW_RESTORE);
+            } else {
+                ShowWindow(hExistingWnd, SW_SHOW);
+            }
+            SetForegroundWindow(hExistingWnd);
+        }
+        if (hMutex) {
+            CloseHandle(hMutex);
+        }
+        return 0; // Quitter immédiatement pour empêcher la duplication
+    }
+    g_hSingleInstanceMutex = hMutex;
+
     INITCOMMONCONTROLSEX icex;
     icex.dwSize = sizeof(INITCOMMONCONTROLSEX);
     icex.dwICC = ICC_LISTVIEW_CLASSES | ICC_BAR_CLASSES | ICC_STANDARD_CLASSES;
@@ -1866,6 +1896,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
 // Procédure de fenêtre principale (WndProc)
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
+    // Réactivation inter-instance si l'utilisateur relance taskmgr.exe alors qu'il tourne déjà
+    if (g_uMsgRestoreInstance != 0 && message == g_uMsgRestoreInstance) {
+        if (g_bInTray) {
+            ShowWindow(hWnd, SW_RESTORE);
+            SetForegroundWindow(hWnd);
+            g_bInTray = FALSE;
+        } else {
+            if (IsIconic(hWnd)) {
+                ShowWindow(hWnd, SW_RESTORE);
+            } else {
+                ShowWindow(hWnd, SW_SHOW);
+            }
+            SetForegroundWindow(hWnd);
+        }
+        RefreshProcessList();
+        return 0;
+    }
+
     switch (message) {
     case WM_CREATE: {
         // Récupération de la police officielle Windows Segoe UI via les métriques système (au lieu de MS Sans Serif / 98)
@@ -2474,6 +2522,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         if (g_hFontSmall) {
             DeleteObject(g_hFontSmall);
             g_hFontSmall = NULL;
+        }
+        if (g_hSingleInstanceMutex) {
+            CloseHandle(g_hSingleInstanceMutex);
+            g_hSingleInstanceMutex = NULL;
         }
         SaveSettings();
         if (g_bAutoRefresh) {

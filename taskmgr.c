@@ -220,6 +220,7 @@ static HWND g_hBtnHideWindows = NULL;
 static HWND g_hBtnExclusions = NULL;
 static HWND g_hEditSearch = NULL;
 static WCHAR g_szSearchFilter[128] = { 0 };
+static HFONT g_hFont = NULL;
 
 // Pointeur dynamique vers NtQueryInformationProcess
 typedef NTSTATUS (NTAPI *pfnNtQueryInformationProcess)(
@@ -993,6 +994,67 @@ static void PruneHistory(const DWORD *activePids, int count) {
     }
 }
 
+// ============================================================================
+// Gestion du thème visuel moderne Windows (suppression de l'apparence 98)
+// ============================================================================
+
+// Détection du mode sombre Windows (Windows 10 build 17763+ et Windows 11)
+static BOOL IsWindowsDarkModeActive(void) {
+    HKEY hKey;
+    DWORD val = 1;
+    DWORD size = sizeof(val);
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize", 0, KEY_READ, &hKey) == ERROR_SUCCESS) {
+        RegQueryValueExW(hKey, L"AppsUseLightTheme", NULL, NULL, (LPBYTE)&val, &size);
+        RegCloseKey(hKey);
+    }
+    return (val == 0);
+}
+
+// Application des attributs DWM modernes (Barre de titre sombre immersive sous Windows 10/11 si activée)
+static void ApplyDwmModernAttributes(HWND hWnd) {
+    if (!hWnd) return;
+    HMODULE hDwmapi = LoadLibraryW(L"dwmapi.dll");
+    if (hDwmapi) {
+        typedef HRESULT (WINAPI *pfnDwmSetWindowAttribute)(HWND, DWORD, LPCVOID, DWORD);
+        pfnDwmSetWindowAttribute pDwmSet = (pfnDwmSetWindowAttribute)GetProcAddress(hDwmapi, "DwmSetWindowAttribute");
+        if (pDwmSet) {
+            BOOL bDarkMode = IsWindowsDarkModeActive();
+            // DWMWA_USE_IMMERSIVE_DARK_MODE (20 pour Windows 11 et Win 10 2004+, 19 pour Win 10 1809)
+            pDwmSet(hWnd, 20, &bDarkMode, sizeof(bDarkMode));
+            pDwmSet(hWnd, 19, &bDarkMode, sizeof(bDarkMode));
+        }
+        FreeLibrary(hDwmapi);
+    }
+}
+
+// Application du thème moderne officiel Windows (Explorer style au lieu du style 98)
+static void ApplyModernWindowsTheme(HWND hWnd, HWND hListView) {
+    HMODULE hUxTheme = LoadLibraryW(L"uxtheme.dll");
+    if (hUxTheme) {
+        typedef HRESULT (WINAPI *pfnSetWindowTheme)(HWND, LPCWSTR, LPCWSTR);
+        pfnSetWindowTheme pSetWindowTheme = (pfnSetWindowTheme)GetProcAddress(hUxTheme, "SetWindowTheme");
+        if (pSetWindowTheme && hListView) {
+            BOOL bDarkMode = IsWindowsDarkModeActive();
+            // Utiliser le thème Explorer officiel de Windows (rendu moderne avec survol et sélection bleutée translucide)
+            if (bDarkMode) {
+                pSetWindowTheme(hListView, L"DarkMode_Explorer", NULL);
+            } else {
+                pSetWindowTheme(hListView, L"Explorer", NULL);
+            }
+            HWND hHeader = ListView_GetHeader(hListView);
+            if (hHeader) {
+                if (bDarkMode) {
+                    pSetWindowTheme(hHeader, L"DarkMode_ItemsView", NULL);
+                } else {
+                    pSetWindowTheme(hHeader, L"Explorer", NULL);
+                }
+            }
+        }
+        FreeLibrary(hUxTheme);
+    }
+    ApplyDwmModernAttributes(hWnd);
+}
+
 // Point d'entrée WinMain
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     (void)hPrevInstance;
@@ -1032,7 +1094,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     wc.hInstance = hInstance;
     wc.hIcon = g_hAppIcon ? g_hAppIcon : LoadIcon(NULL, IDI_APPLICATION);
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
-    wc.hbrBackground = (HBRUSH)(COLOR_WINDOW + 1);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
     wc.lpszClassName = CLASS_NAME;
     wc.hIconSm = g_hAppIconSm ? g_hAppIconSm : LoadIcon(NULL, IDI_APPLICATION);
 
@@ -1054,6 +1116,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     g_hMainWnd = hWnd;
+    ApplyDwmModernAttributes(hWnd);
 
     // Définition explicite des icônes de fenêtre (barre de titre, Alt+Tab, barre des tâches Windows)
     if (g_hAppIcon) {
@@ -1095,7 +1158,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_CREATE: {
-        HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        // Récupération de la police officielle Windows Segoe UI via les métriques système (au lieu de MS Sans Serif / 98)
+        NONCLIENTMETRICSW ncm = { 0 };
+        ncm.cbSize = sizeof(NONCLIENTMETRICSW);
+        if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, sizeof(NONCLIENTMETRICSW), &ncm, 0)) {
+            g_hFont = CreateFontIndirectW(&ncm.lfMessageFont);
+        }
+        if (!g_hFont) {
+            g_hFont = CreateFontW(
+                -12, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI"
+            );
+        }
+        if (!g_hFont) {
+            g_hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        }
+        HFONT hFont = g_hFont;
 
         // 1. Bouton Auto-Refresh (reprend l'état chargé de settings.ini)
         g_hBtnAutoRefresh = CreateWindowExW(
@@ -1163,12 +1242,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         );
         SendMessage(g_hEditSearch, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        // 7. Contrôle ListView SysListView32
+        // 7. Contrôle ListView SysListView32 avec bordure native subtile
         g_hListView = CreateWindowExW(
-            0,
+            WS_EX_CLIENTEDGE,
             WC_LISTVIEWW,
             L"",
-            WS_CHILD | WS_VISIBLE | WS_BORDER | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
+            WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS,
             10, 48, 1220, 600,
             hWnd, (HMENU)IDC_LISTVIEW, GetModuleHandle(NULL), NULL
         );
@@ -1180,6 +1259,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         );
 
         InitListViewColumns(g_hListView);
+
+        // Application du thème visuel moderne Explorer et police sur l'en-tête
+        ApplyModernWindowsTheme(hWnd, g_hListView);
+        HWND hHeader = ListView_GetHeader(g_hListView);
+        if (hHeader) {
+            SendMessage(hHeader, WM_SETFONT, (WPARAM)hFont, TRUE);
+        }
 
         // 8. Barre d'état StatusBar
         g_hStatusBar = CreateWindowExW(
@@ -1539,6 +1625,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
 
+    case WM_CTLCOLORSTATIC: {
+        // Fond transparent pour le label 'Filtrer :' afin qu'il s'intègre au fond natif Windows
+        HDC hdcStatic = (HDC)wParam;
+        SetBkMode(hdcStatic, TRANSPARENT);
+        return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+    }
+
+    case WM_THEMECHANGED:
+    case WM_SETTINGCHANGE:
+        // Réaction dynamique si l'utilisateur change de thème ou de mode sombre Windows
+        ApplyModernWindowsTheme(hWnd, g_hListView);
+        InvalidateRect(hWnd, NULL, TRUE);
+        return 0;
+
     case WM_DESTROY:
         RemoveAllTrayIcons();
         if (g_hAppIcon) {
@@ -1548,6 +1648,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         if (g_hAppIconSm) {
             DestroyIcon(g_hAppIconSm);
             g_hAppIconSm = NULL;
+        }
+        if (g_hFont) {
+            DeleteObject(g_hFont);
+            g_hFont = NULL;
         }
         SaveSettings();
         if (g_bAutoRefresh) {

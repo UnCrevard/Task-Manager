@@ -1,5 +1,10 @@
 // Resource file pour le Gestionnaire des tâches Win32 natif
 #define IDI_APP_ICON 1
+#define CREATEPROCESS_MANIFEST_RESOURCE_ID 1
+#define RT_MANIFEST 24
 
 // 1ère icône du binaire PE = icône par défaut de l'exécutable sous l'explorateur Windows
 IDI_APP_ICON ICON "app.ico"
+
+// Manifeste Windows moderne pour activer les Styles Visuels (Common Controls v6 - Adieu le thème 98 !)
+CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "taskmgr.manifest"

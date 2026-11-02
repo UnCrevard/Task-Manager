@@ -4,7 +4,7 @@
 CC ?= gcc
 WINDRES ?= windres
 CFLAGS = -mwindows -O2 -s -static -Wall -Wextra
-LIBS = -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32
+LIBS = -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32 -luxtheme -ldwmapi
 
 TARGET = taskmgr.exe
 SRC = taskmgr.c
@@ -13,7 +13,7 @@ RES = resource.o
 
 all: $(TARGET)
 
-$(RES): $(RC) app.ico
+$(RES): $(RC) app.ico taskmgr.manifest
 	$(WINDRES) $(RC) -O coff -o $(RES)
 
 $(TARGET): $(SRC) $(RES)

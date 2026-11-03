@@ -3,9 +3,6 @@
 // Resource file pour le Gestionnaire des tâches Win32 natif
 #include "resource.h"
 
-// Définition de la langue neutre pour un encodage universel UTF-8
-LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
-
 // 1ère icône du binaire PE = icône par défaut de l'exécutable sous l'explorateur Windows
 IDI_APP_ICON ICON "app.ico"
 
@@ -48,7 +45,7 @@ BEGIN
     IDS_MENU_SET_PRIORITY       "Définir la priorité"
     IDS_MENU_COPY_CMDLINE       "Copier la ligne de commande (CLI)"
     IDS_MENU_OPEN_LOCATION      "Ouvrir l'emplacement du fichier"
-    IDS_MENU_HIDE_BY_NAME_FMT   "Masquer \"%s\" par son nom"
+    IDS_MENU_HIDE_BY_NAME_FMT   "Masquer ""%s"" par son nom"
     IDS_MENU_MANAGE_EXCLUSIONS  "Gérer les processus exclus..."
     IDS_MENU_NO_EXCLUSIONS      "(Aucun processus exclu par son nom)"
     IDS_MENU_RESTORE_HEADER     "--- Cliquer pour réafficher ---"

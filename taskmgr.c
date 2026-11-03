@@ -290,43 +290,6 @@ void RemoveAllTrayIcons(void);
 #define RES_BUF_COUNT 16
 #define RES_BUF_LEN 256
 
-// Détection et réparation automatique du mojibake UTF-8
-// Si windres a compilé un fichier UTF-8 sans codepage 65001, chaque octet UTF-8 (0xC2..0xF4)
-// se retrouve découpé en caractères individuels Latin-1 (ex: Ã© au lieu de é).
-static void FixMojibakeIfNeeded(WCHAR* str) {
-    if (!str || !*str) return;
-
-    BOOL bHasUtf8Sequences = FALSE;
-    int len = 0;
-    for (int i = 0; str[i] != L'\0'; i++) {
-        len++;
-        if (str[i] > 0x00FF) {
-            // Contient déjà un vrai caractère Unicode (> 255), la chaîne est déjà en UTF-16
-            return;
-        }
-        if ((unsigned char)str[i] >= 0xC2 && (unsigned char)str[i] <= 0xF4) {
-            if ((unsigned char)str[i + 1] >= 0x80 && (unsigned char)str[i + 1] <= 0xBF) {
-                bHasUtf8Sequences = TRUE;
-            }
-        }
-    }
-    if (!bHasUtf8Sequences) return;
-
-    char rawBytes[RES_BUF_LEN * 2];
-    if (len >= (int)sizeof(rawBytes) - 1) len = (int)sizeof(rawBytes) - 1;
-    for (int i = 0; i < len; i++) {
-        rawBytes[i] = (char)(str[i] & 0xFF);
-    }
-    rawBytes[len] = '\0';
-
-    WCHAR converted[RES_BUF_LEN];
-    int res = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, rawBytes, len, converted, RES_BUF_LEN - 1);
-    if (res > 0) {
-        converted[res] = L'\0';
-        wcscpy_s(str, RES_BUF_LEN, converted);
-    }
-}
-
 const WCHAR* GetResString(UINT uID) {
     static WCHAR s_bufs[RES_BUF_COUNT][RES_BUF_LEN];
     static int s_bufIdx = 0;
@@ -335,7 +298,6 @@ const WCHAR* GetResString(UINT uID) {
     s_bufIdx = (s_bufIdx + 1) % RES_BUF_COUNT;
 
     if (LoadStringW(GetModuleHandleW(NULL), uID, s_bufs[idx], RES_BUF_LEN) > 0) {
-        FixMojibakeIfNeeded(s_bufs[idx]);
         return s_bufs[idx];
     }
 

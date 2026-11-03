@@ -6,8 +6,12 @@
 #define RESOURCE_H
 
 #define IDI_APP_ICON                    1
+#ifndef CREATEPROCESS_MANIFEST_RESOURCE_ID
 #define CREATEPROCESS_MANIFEST_RESOURCE_ID 1
+#endif
+#ifndef RT_MANIFEST
 #define RT_MANIFEST                     24
+#endif
 
 // --- Identifiants de la table des chaînes (STRINGTABLE) ---
 

@@ -44,6 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "resource.h"
 
 #ifdef _MSC_VER
 // Activation du style visuel Windows moderne sous MSVC
@@ -65,7 +66,6 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #define IDC_STATUSBAR        1002
 #define IDC_BTN_REFRESH      1003
 #define IDC_BTN_AUTOREFRESH  1004
-#define IDC_BTN_KILL         1005
 #define IDC_EDIT_SEARCH      1006
 #define IDC_STATIC_SEARCH    1007
 #define IDC_BTN_PRIORITY     1008
@@ -113,18 +113,9 @@ enum {
     COL_COUNT
 };
 
-// Titres de base des colonnes
-static const WCHAR* s_BaseColumnTitles[COL_COUNT] = {
-    L"Nom de l'image",
-    L"PID",
-    L"CPU %",
-    L"Mémoire (Mo)",
-    L"Disque (Mo/s)",
-    L"Réseau (Ko/s)",
-    L"GPU %",
-    L"Priorité",
-    L"Ligne de commande (CLI Args)"
-};
+// Prototypes des fonctions d'accès aux ressources
+const WCHAR* GetResString(UINT uID);
+const WCHAR* GetColumnTitle(int col);
 
 // Structure de stockage de métriques d'un processus
 typedef struct {
@@ -190,11 +181,23 @@ static double g_TrayRamHistory[TRAY_HISTORY_POINTS] = { 0 };
 static double g_TrayGpuHistory[TRAY_HISTORY_POINTS] = { 0 };
 static int g_TrayHistoryCount = 0;
 
-// Historique étendu sur 60 secondes pour les graphiques de performances au-dessus des processus
-#define PERF_HISTORY_POINTS 60
+// Historique étendu sur 1 heure (3600 secondes) pour les graphiques de performances au-dessus des processus
+#define PERF_HISTORY_POINTS 3600
+
+// Échantillon de processus consommateur le plus actif à une seconde précise
+typedef struct {
+    WCHAR szName[32];
+    DWORD pid;
+    float usage; // % pour CPU/GPU, Mo pour RAM
+} TopProcSample;
+
 static double g_PerfCpuHistory[PERF_HISTORY_POINTS] = { 0 };
 static double g_PerfRamHistory[PERF_HISTORY_POINTS] = { 0 };
 static double g_PerfGpuHistory[PERF_HISTORY_POINTS] = { 0 };
+
+static TopProcSample g_TopCpuHistory[PERF_HISTORY_POINTS];
+static TopProcSample g_TopRamHistory[PERF_HISTORY_POINTS];
+static TopProcSample g_TopGpuHistory[PERF_HISTORY_POINTS];
 static int g_PerfHistoryCount = 0;
 
 static double g_LastCpuPct = 0.0;
@@ -224,7 +227,6 @@ static HWND g_hStatusBar = NULL;
 static HWND g_hGraphBanner = NULL;
 static HWND g_hBtnRefresh = NULL;
 static HWND g_hBtnAutoRefresh = NULL;
-static HWND g_hBtnKill = NULL;
 static HWND g_hBtnHideWindows = NULL;
 static HWND g_hBtnExclusions = NULL;
 static HWND g_hEditSearch = NULL;
@@ -281,6 +283,108 @@ void UpdateExclusionsButtonText(void);
 HICON CreateHistoryGraphIcon(const double *history, int count, DWORD baseColor, DWORD peakColor, DWORD alertColor);
 void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb);
 void RemoveAllTrayIcons(void);
+
+// ============================================================================
+// Centralisation des chaînes de caractères (Chargement depuis resource.rc)
+// ============================================================================
+const WCHAR* GetResString(UINT uID) {
+    #define RES_BUF_COUNT 16
+    #define RES_BUF_LEN 256
+    static WCHAR s_bufs[RES_BUF_COUNT][RES_BUF_LEN];
+    static int s_bufIdx = 0;
+
+    int idx = s_bufIdx;
+    s_bufIdx = (s_bufIdx + 1) % RES_BUF_COUNT;
+
+    if (LoadStringW(GetModuleHandleW(NULL), uID, s_bufs[idx], RES_BUF_LEN) > 0) {
+        return s_bufs[idx];
+    }
+
+    // Valeur de secours (fallback) si l'exécutable est compilé sans le fichier de ressources lié
+    switch (uID) {
+    case IDS_APP_TITLE: return L"Gestionnaire des tâches Windows (C Win32 Natif)";
+    case IDS_COL_NAME: return L"Nom de l'image";
+    case IDS_COL_PID: return L"PID";
+    case IDS_COL_CPU: return L"CPU %";
+    case IDS_COL_RAM: return L"Mémoire (Mo)";
+    case IDS_COL_DISK: return L"Disque (Mo/s)";
+    case IDS_COL_NET: return L"Réseau (Ko/s)";
+    case IDS_COL_GPU: return L"GPU %";
+    case IDS_COL_PRIORITY: return L"Priorité";
+    case IDS_COL_CMDLINE: return L"Ligne de commande (CLI Args)";
+    case IDS_BTN_AUTOREFRESH_ON: return L"Auto-refresh Oui";
+    case IDS_BTN_AUTOREFRESH_OFF: return L"Auto-refresh Non";
+    case IDS_BTN_REFRESH: return L"Actualiser (F5)";
+    case IDS_BTN_WINDOWS_ON: return L"Windows Oui";
+    case IDS_BTN_WINDOWS_OFF: return L"Windows Non";
+    case IDS_BTN_EXCLUSIONS_FMT: return L"Exclusions (%d)";
+    case IDS_LABEL_FILTER: return L"Filtrer :";
+    case IDS_MENU_KILL_IMMEDIATE: return L"Tuer immédiatement\tSuppr";
+    case IDS_MENU_PRIORITY_REALTIME: return L"Temps réel";
+    case IDS_MENU_PRIORITY_HIGH: return L"Haute";
+    case IDS_MENU_PRIORITY_ABOVENORM: return L"Supérieure à la normale";
+    case IDS_MENU_PRIORITY_NORMAL: return L"Normale";
+    case IDS_MENU_PRIORITY_BELOWNORM: return L"Inférieure à la normale";
+    case IDS_MENU_PRIORITY_IDLE: return L"Basse (Idle)";
+    case IDS_MENU_SET_PRIORITY: return L"Définir la priorité";
+    case IDS_MENU_COPY_CMDLINE: return L"Copier la ligne de commande (CLI)";
+    case IDS_MENU_OPEN_LOCATION: return L"Ouvrir l'emplacement du fichier";
+    case IDS_MENU_HIDE_BY_NAME_FMT: return L"Masquer \"%s\" par son nom";
+    case IDS_MENU_MANAGE_EXCLUSIONS: return L"Gérer les processus exclus...";
+    case IDS_MENU_NO_EXCLUSIONS: return L"(Aucun processus exclu par son nom)";
+    case IDS_MENU_RESTORE_HEADER: return L"--- Cliquer pour réafficher ---";
+    case IDS_MENU_RESTORE_ITEM_FMT: return L"Réafficher : %s";
+    case IDS_MENU_CLEAR_EXCLUSIONS: return L"Tout réafficher (effacer les exclusions)";
+    case IDS_TRAY_OPEN: return L"Ouvrir le Task Manager";
+    case IDS_TRAY_EXIT: return L"Quitter définitivement";
+    case IDS_TRAY_CPU_FMT: return L"Historique CPU : %.1f %%";
+    case IDS_TRAY_RAM_FMT: return L"Historique RAM : %.1f %% (%.1f / %.1f Go)";
+    case IDS_TRAY_GPU_FMT: return L"Historique GPU : %.1f %%";
+    case IDS_STATUS_PROCESSES_FMT: return L"Processus : %d / %d";
+    case IDS_STATUS_CPU_FMT: return L"CPU Global : %.1f %%";
+    case IDS_STATUS_RAM_FMT: return L"RAM : %u / %u Mo (%u %%)";
+    case IDS_STATUS_EXCLUSIONS_FMT: return L"Exclusions : %d actives | Tri : %s %s";
+    case IDS_GRAPH_CPU_TITLE: return L"CPU";
+    case IDS_GRAPH_CPU_SUB: return L"1 heure • % d'utilisation";
+    case IDS_GRAPH_RAM_TITLE: return L"Mémoire";
+    case IDS_GRAPH_RAM_SUB_FMT: return L"%.1f / %.1f Go (1h)";
+    case IDS_GRAPH_RAM_SUB_DEFAULT: return L"Utilisation mémoire (1h)";
+    case IDS_GRAPH_GPU_TITLE: return L"GPU";
+    case IDS_GRAPH_GPU_SUB: return L"Moteur 3D • 1 heure";
+    case IDS_TIP_TIME_MIN_SEC: return L"-%dm %02ds • %.1f %%";
+    case IDS_TIP_TIME_SEC: return L"-%ds • %.1f %%";
+    case IDS_TIP_TOP_PROC: return L"Top: %.18s (%u)";
+    case IDS_TIP_USAGE_PCT: return L"Usage: %.1f %%";
+    case IDS_TIP_USAGE_RAM: return L"Mémoire: %u Mo";
+    case IDS_TIP_NO_DATA: return L"Top: -";
+    case IDS_PRIO_REALTIME: return L"Temps réel";
+    case IDS_PRIO_HIGH: return L"Haute";
+    case IDS_PRIO_ABOVENORM: return L"Supérieure";
+    case IDS_PRIO_NORMAL: return L"Normale";
+    case IDS_PRIO_BELOWNORM: return L"Inférieure";
+    case IDS_PRIO_IDLE: return L"Basse";
+    case IDS_PRIO_UNKNOWN: return L"Inconnue";
+    case IDS_STR_RESTRICTED: return L"[Système / Accès restreint]";
+    case IDS_STR_RESTRICTED_ACCESS: return L"[Accès restreint]";
+    case IDS_STR_NO_NTAPI: return L"[Non disponible - NTAPI absente]";
+    default: return L"";
+    }
+}
+
+const WCHAR* GetColumnTitle(int col) {
+    switch (col) {
+    case COL_NAME: return GetResString(IDS_COL_NAME);
+    case COL_PID: return GetResString(IDS_COL_PID);
+    case COL_CPU: return GetResString(IDS_COL_CPU);
+    case COL_RAM: return GetResString(IDS_COL_RAM);
+    case COL_DISK: return GetResString(IDS_COL_DISK);
+    case COL_NET: return GetResString(IDS_COL_NET);
+    case COL_GPU: return GetResString(IDS_COL_GPU);
+    case COL_PRIORITY: return GetResString(IDS_COL_PRIORITY);
+    case COL_CMDLINE: return GetResString(IDS_COL_CMDLINE);
+    default: return L"";
+    }
+}
 
 // Recherche sous-chaîne insensible à la casse autonome
 static BOOL ContainsSubstringI(const WCHAR *haystack, const WCHAR *needle) {
@@ -410,7 +514,7 @@ void ClearAllExcludedProcesses(void) {
 void UpdateExclusionsButtonText(void) {
     if (g_hBtnExclusions) {
         WCHAR szText[64];
-        wsprintfW(szText, L"Exclusions (%d)", g_ExcludedCount);
+        wsprintfW(szText, GetResString(IDS_BTN_EXCLUSIONS_FMT), g_ExcludedCount);
         SetWindowTextW(g_hBtnExclusions, szText);
     }
 }
@@ -1176,40 +1280,20 @@ static LRESULT CALLBACK ButtonSubclassProc(
         LRESULT state = SendMessageW(hWnd, BM_GETSTATE, 0, 0);
         BOOL bPressed = (state & BST_PUSHED) != 0;
 
-        LONG_PTR ctrlId = GetWindowLongPtrW(hWnd, GWLP_ID);
-        BOOL isKill = (ctrlId == IDC_BTN_KILL);
-
+        // Boutons d'action standards : gris ardoise mat, contours adoucis, texte non éblouissant
         COLORREF clrBg, clrBorder, clrText;
-        if (isKill) {
-            // Teinte bordeaux sombre, douce et mate pour le bouton Tuer (sans éclat agressif)
-            if (bPressed) {
-                clrBg = RGB(50, 22, 25);
-                clrBorder = RGB(105, 46, 52);
-                clrText = RGB(240, 185, 190);
-            } else if (bHover) {
-                clrBg = RGB(75, 30, 35);
-                clrBorder = RGB(125, 52, 58);
-                clrText = RGB(245, 200, 205);
-            } else {
-                clrBg = RGB(60, 25, 28);
-                clrBorder = RGB(92, 40, 45);
-                clrText = RGB(225, 170, 175);
-            }
+        if (bPressed) {
+            clrBg = RGB(36, 38, 44);
+            clrBorder = RGB(72, 76, 88);
+            clrText = RGB(230, 233, 240);
+        } else if (bHover) {
+            clrBg = RGB(52, 55, 64);
+            clrBorder = RGB(82, 87, 100);
+            clrText = RGB(235, 238, 245);
         } else {
-            // Boutons d'action standards : gris ardoise mat, contours adoucis, texte non éblouissant
-            if (bPressed) {
-                clrBg = RGB(36, 38, 44);
-                clrBorder = RGB(72, 76, 88);
-                clrText = RGB(230, 233, 240);
-            } else if (bHover) {
-                clrBg = RGB(52, 55, 64);
-                clrBorder = RGB(82, 87, 100);
-                clrText = RGB(235, 238, 245);
-            } else {
-                clrBg = RGB(43, 45, 52);
-                clrBorder = RGB(64, 67, 78);
-                clrText = RGB(210, 214, 222);
-            }
+            clrBg = RGB(43, 45, 52);
+            clrBorder = RGB(64, 67, 78);
+            clrText = RGB(210, 214, 222);
         }
 
         // Fond et bordure
@@ -1330,12 +1414,12 @@ static LRESULT CALLBACK StatusBarSubclassProc(
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
-// Dessin d'une carte de métrique (CPU, RAM, GPU) avec graphique d'historique 60s
+// Dessin d'une carte de métrique (CPU, RAM, GPU) avec graphique d'historique 1h (3600s) et infobulle au survol
 static void DrawPerfCard(
-    HDC hdc, RECT rcCard, const WCHAR *szTitle, const WCHAR *szSub,
-    const double *history, int count, double curVal,
+    HDC hdc, RECT rcCard, int cardIdx, const WCHAR *szTitle, const WCHAR *szSub,
+    const double *history, const TopProcSample *topHistory, int count, double curVal,
     COLORREF clrAccent, COLORREF clrPeak, COLORREF clrArea,
-    BOOL bIsDark
+    BOOL bIsDark, int hoverCard, int hoverX, int hoverY
 ) {
     // 1. Fond et bordure douce de la carte
     COLORREF clrCardBg = bIsDark ? RGB(30, 32, 40) : RGB(255, 255, 255);
@@ -1382,7 +1466,7 @@ static void DrawPerfCard(
 
     if (hOldFont) SelectObject(hdc, hOldFont);
 
-    // 3. Cadre intérieur du graphique
+    // 3. Cadre intérieur du graphique (Historique 1h)
     RECT rcGraph = { rcCard.left + 8, rcCard.top + 34, rcCard.right - 8, rcCard.bottom - 7 };
     int gW = rcGraph.right - rcGraph.left;
     int gH = rcGraph.bottom - rcGraph.top;
@@ -1400,14 +1484,14 @@ static void DrawPerfCard(
     DeleteObject(hBrGraph);
     DeleteObject(hPenGraphBorder);
 
-    // Lignes de grille (50% horizontale)
+    // Lignes de grille horizontales (50%)
     HPEN hGridPen = CreatePen(PS_SOLID, 1, bIsDark ? RGB(32, 35, 45) : RGB(235, 238, 243));
     hOldPen = (HPEN)SelectObject(hdc, hGridPen);
     int y50 = rcGraph.top + gH / 2;
     MoveToEx(hdc, rcGraph.left + 1, y50, NULL);
     LineTo(hdc, rcGraph.right - 1, y50);
 
-    // Lignes verticales de grille (toutes les 15 secondes)
+    // Lignes verticales de grille (repères 45m, 30m, 15m)
     for (int s = 1; s <= 3; s++) {
         int xGrid = rcGraph.left + (gW * s) / 4;
         MoveToEx(hdc, xGrid, rcGraph.top + 1, NULL);
@@ -1416,35 +1500,56 @@ static void DrawPerfCard(
     SelectObject(hdc, hOldPen);
     DeleteObject(hGridPen);
 
-    // Tracé de la courbe et de la zone ombrée sous la courbe
-    if (count > 1) {
-        POINT *pts = (POINT*)malloc(sizeof(POINT) * (count + 2));
+    // Repères temporels au bas du graphique (60m, 45m, 30m, 15m, 0s)
+    if (gW >= 120) {
+        if (g_hFontSmall) SelectObject(hdc, g_hFontSmall);
+        SetTextColor(hdc, bIsDark ? RGB(90, 95, 110) : RGB(160, 168, 180));
+        RECT rcT60 = { rcGraph.left + 3, rcGraph.bottom - 12, rcGraph.left + 30, rcGraph.bottom - 1 };
+        DrawTextW(hdc, L"60m", -1, &rcT60, DT_SINGLELINE | DT_LEFT | DT_VCENTER);
+        RECT rcT45 = { rcGraph.left + gW / 4 - 10, rcGraph.bottom - 12, rcGraph.left + gW / 4 + 14, rcGraph.bottom - 1 };
+        DrawTextW(hdc, L"45m", -1, &rcT45, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        RECT rcT30 = { rcGraph.left + gW / 2 - 10, rcGraph.bottom - 12, rcGraph.left + gW / 2 + 14, rcGraph.bottom - 1 };
+        DrawTextW(hdc, L"30m", -1, &rcT30, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        RECT rcT15 = { rcGraph.left + (gW * 3) / 4 - 10, rcGraph.bottom - 12, rcGraph.left + (gW * 3) / 4 + 14, rcGraph.bottom - 1 };
+        DrawTextW(hdc, L"15m", -1, &rcT15, DT_SINGLELINE | DT_CENTER | DT_VCENTER);
+        RECT rcT0 = { rcGraph.right - 22, rcGraph.bottom - 12, rcGraph.right - 3, rcGraph.bottom - 1 };
+        DrawTextW(hdc, L"0s", -1, &rcT0, DT_SINGLELINE | DT_RIGHT | DT_VCENTER);
+    }
+
+    // 4. Tracé fluide de la courbe et de la zone ombrée (Échantillonnage optimisé par pixel sur 3600 points)
+    if (count > 1 && gW > 4) {
+        int numPoints = gW - 2;
+        POINT *pts = (POINT*)malloc(sizeof(POINT) * (numPoints + 2));
         if (pts) {
-            for (int i = 0; i < count; i++) {
-                double pct = history[i];
+            for (int p = 0; p < numPoints; p++) {
+                int idx = (int)(((double)p / (double)(numPoints - 1)) * (count - 1));
+                if (idx < 0) idx = 0;
+                if (idx >= count) idx = count - 1;
+
+                double pct = history[idx];
                 if (pct < 0.0) pct = 0.0;
                 if (pct > 100.0) pct = 100.0;
 
-                int px = rcGraph.left + (int)(((double)i / (double)(count - 1)) * (gW - 2)) + 1;
+                int px = rcGraph.left + 1 + p;
                 int py = rcGraph.bottom - 1 - (int)((pct / 100.0) * (gH - 3));
                 if (py < rcGraph.top + 1) py = rcGraph.top + 1;
                 if (py > rcGraph.bottom - 1) py = rcGraph.bottom - 1;
 
-                pts[i].x = px;
-                pts[i].y = py;
+                pts[p].x = px;
+                pts[p].y = py;
             }
 
             // Polygone fermé pour le remplissage sous la courbe
-            pts[count].x = pts[count - 1].x;
-            pts[count].y = rcGraph.bottom - 1;
-            pts[count + 1].x = pts[0].x;
-            pts[count + 1].y = rcGraph.bottom - 1;
+            pts[numPoints].x = pts[numPoints - 1].x;
+            pts[numPoints].y = rcGraph.bottom - 1;
+            pts[numPoints + 1].x = pts[0].x;
+            pts[numPoints + 1].y = rcGraph.bottom - 1;
 
             HBRUSH hBrArea = CreateSolidBrush(clrArea);
             HPEN hPenNull = CreatePen(PS_NULL, 0, 0);
             hOldBr = (HBRUSH)SelectObject(hdc, hBrArea);
             hOldPen = (HPEN)SelectObject(hdc, hPenNull);
-            Polygon(hdc, pts, count + 2);
+            Polygon(hdc, pts, numPoints + 2);
             SelectObject(hdc, hOldBr);
             SelectObject(hdc, hOldPen);
             DeleteObject(hBrArea);
@@ -1453,13 +1558,13 @@ static void DrawPerfCard(
             // Courbe principale
             HPEN hPenLine = CreatePen(PS_SOLID, 2, clrAccent);
             hOldPen = (HPEN)SelectObject(hdc, hPenLine);
-            Polyline(hdc, pts, count);
+            Polyline(hdc, pts, numPoints);
             SelectObject(hdc, hOldPen);
             DeleteObject(hPenLine);
 
-            // Point lumineux final sur l'échantillon actuel
-            int lastX = pts[count - 1].x;
-            int lastY = pts[count - 1].y;
+            // Point lumineux final sur l'échantillon actuel (à l'extrémité droite)
+            int lastX = pts[numPoints - 1].x;
+            int lastY = pts[numPoints - 1].y;
             HBRUSH hBrDotEnd = CreateSolidBrush(clrPeak);
             HPEN hPenDotBorder = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
             hOldBr = (HBRUSH)SelectObject(hdc, hBrDotEnd);
@@ -1473,6 +1578,118 @@ static void DrawPerfCard(
             free(pts);
         }
     }
+
+    // 5. Survol interactif de la souris (Affiche le tracker et le processus responsable à cet instant T)
+    if (hoverCard == cardIdx && hoverX >= rcGraph.left + 1 && hoverX <= rcGraph.right - 1 && gW > 4) {
+        int relX = hoverX - (rcGraph.left + 1);
+        int sampleIdx = (int)(((double)relX / (double)(gW - 2)) * (count - 1));
+        if (sampleIdx < 0) sampleIdx = 0;
+        if (sampleIdx >= count) sampleIdx = count - 1;
+
+        double sampleVal = history[sampleIdx];
+        if (sampleVal < 0.0) sampleVal = 0.0;
+        if (sampleVal > 100.0) sampleVal = 100.0;
+
+        int sampleY = rcGraph.bottom - 1 - (int)((sampleVal / 100.0) * (gH - 3));
+        if (sampleY < rcGraph.top + 1) sampleY = rcGraph.top + 1;
+        if (sampleY > rcGraph.bottom - 1) sampleY = rcGraph.bottom - 1;
+
+        // Ligne verticale de repère temporel sous le curseur
+        HPEN hPenTracker = CreatePen(PS_DOT, 1, bIsDark ? RGB(200, 210, 230) : RGB(70, 80, 95));
+        HPEN hOldPen = (HPEN)SelectObject(hdc, hPenTracker);
+        MoveToEx(hdc, hoverX, rcGraph.top + 1, NULL);
+        LineTo(hdc, hoverX, rcGraph.bottom - 1);
+        SelectObject(hdc, hOldPen);
+        DeleteObject(hPenTracker);
+
+        // Point cible lumineux sur la courbe
+        HBRUSH hBrTarget = CreateSolidBrush(clrPeak);
+        HPEN hPenTarget = CreatePen(PS_SOLID, 1, RGB(255, 255, 255));
+        HBRUSH hOldBr = (HBRUSH)SelectObject(hdc, hBrTarget);
+        hOldPen = (HPEN)SelectObject(hdc, hPenTarget);
+        Ellipse(hdc, hoverX - 4, sampleY - 4, hoverX + 5, sampleY + 5);
+        SelectObject(hdc, hOldBr);
+        SelectObject(hdc, hOldPen);
+        DeleteObject(hBrTarget);
+        DeleteObject(hPenTarget);
+
+        // Textes de l'infobulle (temps écoulé, ressource, et top processus consommateur)
+        int secondsAgo = (count - 1) - sampleIdx;
+        int minAgo = secondsAgo / 60;
+        int secAgo = secondsAgo % 60;
+
+        WCHAR szTimeLine[64];
+        if (minAgo > 0) {
+            swprintf_s(szTimeLine, sizeof(szTimeLine) / sizeof(WCHAR), GetResString(IDS_TIP_TIME_MIN_SEC), minAgo, secAgo, sampleVal);
+        } else {
+            swprintf_s(szTimeLine, sizeof(szTimeLine) / sizeof(WCHAR), GetResString(IDS_TIP_TIME_SEC), secAgo, sampleVal);
+        }
+
+        WCHAR szProcLine[128];
+        WCHAR szUsageLine[64];
+        const TopProcSample *tp = (topHistory && sampleIdx < count) ? &topHistory[sampleIdx] : NULL;
+
+        if (tp && tp->szName[0] != L'\0') {
+            swprintf_s(szProcLine, sizeof(szProcLine) / sizeof(WCHAR), GetResString(IDS_TIP_TOP_PROC), tp->szName, tp->pid);
+            if (cardIdx == 1) { // RAM
+                swprintf_s(szUsageLine, sizeof(szUsageLine) / sizeof(WCHAR), GetResString(IDS_TIP_USAGE_RAM), (UINT)tp->usage);
+            } else {
+                swprintf_s(szUsageLine, sizeof(szUsageLine) / sizeof(WCHAR), GetResString(IDS_TIP_USAGE_PCT), tp->usage);
+            }
+        } else {
+            wcsncpy_s(szProcLine, 128, GetResString(IDS_TIP_NO_DATA), _TRUNCATE);
+            szUsageLine[0] = L'\0';
+        }
+
+        // Boîte d'infobulle flottante
+        int tipW = 175;
+        int tipH = 46;
+        int tipX = hoverX + 10;
+        int tipY = hoverY - tipH / 2;
+
+        if (tipX + tipW > rcCard.right - 6) {
+            tipX = hoverX - tipW - 10;
+        }
+        if (tipX < rcCard.left + 6) {
+            tipX = rcCard.left + 6;
+        }
+        if (tipY < rcCard.top + 4) {
+            tipY = rcCard.top + 4;
+        }
+        if (tipY + tipH > rcCard.bottom - 4) {
+            tipY = rcCard.bottom - tipH - 4;
+        }
+
+        RECT rcTip = { tipX, tipY, tipX + tipW, tipY + tipH };
+
+        COLORREF clrTipBg = bIsDark ? RGB(16, 18, 24) : RGB(255, 255, 255);
+        HBRUSH hBrTip = CreateSolidBrush(clrTipBg);
+        HPEN hPenTip = CreatePen(PS_SOLID, 1, clrAccent);
+        hOldBr = (HBRUSH)SelectObject(hdc, hBrTip);
+        hOldPen = (HPEN)SelectObject(hdc, hPenTip);
+        RoundRect(hdc, rcTip.left, rcTip.top, rcTip.right, rcTip.bottom, 6, 6);
+        SelectObject(hdc, hOldBr);
+        SelectObject(hdc, hOldPen);
+        DeleteObject(hBrTip);
+        DeleteObject(hPenTip);
+
+        HFONT hOldF = NULL;
+        if (g_hFontSmall) hOldF = (HFONT)SelectObject(hdc, g_hFontSmall);
+
+        RECT rcL1 = { rcTip.left + 8, rcTip.top + 3, rcTip.right - 8, rcTip.top + 16 };
+        SetTextColor(hdc, clrPeak);
+        DrawTextW(hdc, szTimeLine, -1, &rcL1, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+
+        RECT rcL2 = { rcTip.left + 8, rcTip.top + 16, rcTip.right - 8, rcTip.top + 29 };
+        SetTextColor(hdc, bIsDark ? RGB(232, 236, 245) : RGB(25, 30, 42));
+        DrawTextW(hdc, szProcLine, -1, &rcL2, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+
+        RECT rcL3 = { rcTip.left + 8, rcTip.top + 29, rcTip.right - 8, rcTip.top + 42 };
+        SetTextColor(hdc, bIsDark ? RGB(160, 168, 182) : RGB(95, 105, 120));
+        DrawTextW(hdc, szUsageLine, -1, &rcL3, DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS);
+
+        if (hOldF) SelectObject(hdc, hOldF);
+    }
 }
 
 // Subclass pour le bandeau graphique des performances (CPU, RAM, GPU) au-dessus de la liste des processus
@@ -1483,8 +1700,56 @@ static LRESULT CALLBACK GraphBannerSubclassProc(
     (void)uIdSubclass;
     (void)dwRefData;
 
+    static int s_nHoverCard = -1;
+    static int s_nHoverX = -1;
+    static int s_nHoverY = -1;
+    static BOOL s_bTrackingMouse = FALSE;
+
     if (uMsg == WM_ERASEBKGND) {
         return 1;
+    }
+
+    if (uMsg == WM_MOUSEMOVE) {
+        if (!s_bTrackingMouse) {
+            TRACKMOUSEEVENT tme;
+            tme.cbSize = sizeof(TRACKMOUSEEVENT);
+            tme.dwFlags = TME_LEAVE;
+            tme.hwndTrack = hWnd;
+            tme.dwHoverTime = 0;
+            TrackMouseEvent(&tme);
+            s_bTrackingMouse = TRUE;
+        }
+
+        int mx = LOWORD(lParam);
+        int my = HIWORD(lParam);
+        RECT rcClient;
+        GetClientRect(hWnd, &rcClient);
+        int w = rcClient.right - rcClient.left;
+        int gap = 8;
+        int cardW = (w - (gap * 2)) / 3;
+        if (cardW < 50) cardW = 50;
+
+        int newCard = -1;
+        if (mx >= 0 && mx < cardW) newCard = 0;
+        else if (mx >= cardW + gap && mx < cardW * 2 + gap) newCard = 1;
+        else if (mx >= (cardW + gap) * 2 && mx < w) newCard = 2;
+
+        if (newCard != s_nHoverCard || mx != s_nHoverX || my != s_nHoverY) {
+            s_nHoverCard = newCard;
+            s_nHoverX = mx;
+            s_nHoverY = my;
+            InvalidateRect(hWnd, NULL, FALSE);
+        }
+        return 0;
+    }
+
+    if (uMsg == WM_MOUSELEAVE) {
+        s_bTrackingMouse = FALSE;
+        s_nHoverCard = -1;
+        s_nHoverX = -1;
+        s_nHoverY = -1;
+        InvalidateRect(hWnd, NULL, FALSE);
+        return 0;
     }
 
     if (uMsg == WM_PAINT) {
@@ -1515,40 +1780,38 @@ static LRESULT CALLBACK GraphBannerSubclassProc(
 
         // 1. Carte CPU (Vert émeraude)
         RECT rcCpu = { 0, 0, cardW, h };
-        WCHAR szCpuSub[64] = L"60 secondes • % d'utilisation";
         DrawPerfCard(
-            hMemDC, rcCpu, L"CPU", szCpuSub,
-            g_PerfCpuHistory, PERF_HISTORY_POINTS, g_LastCpuPct,
+            hMemDC, rcCpu, 0, GetResString(IDS_GRAPH_CPU_TITLE), GetResString(IDS_GRAPH_CPU_SUB),
+            g_PerfCpuHistory, g_TopCpuHistory, PERF_HISTORY_POINTS, g_LastCpuPct,
             RGB(16, 185, 129), RGB(52, 211, 153),
             g_bDarkModeActive ? RGB(10, 48, 38) : RGB(220, 252, 231),
-            g_bDarkModeActive
+            g_bDarkModeActive, s_nHoverCard, s_nHoverX, s_nHoverY
         );
 
         // 2. Carte Mémoire RAM (Violet / Pourpre)
         RECT rcRam = { cardW + gap, 0, cardW * 2 + gap, h };
         WCHAR szRamSub[64];
         if (g_LastTotalRamGb > 0.0) {
-            swprintf_s(szRamSub, sizeof(szRamSub) / sizeof(WCHAR), L"%.1f / %.1f Go (60s)", g_LastUsedRamGb, g_LastTotalRamGb);
+            swprintf_s(szRamSub, sizeof(szRamSub) / sizeof(WCHAR), GetResString(IDS_GRAPH_RAM_SUB_FMT), g_LastUsedRamGb, g_LastTotalRamGb);
         } else {
-            wcsncpy_s(szRamSub, 64, L"Utilisation mémoire (60s)", _TRUNCATE);
+            wcsncpy_s(szRamSub, 64, GetResString(IDS_GRAPH_RAM_SUB_DEFAULT), _TRUNCATE);
         }
         DrawPerfCard(
-            hMemDC, rcRam, L"Mémoire", szRamSub,
-            g_PerfRamHistory, PERF_HISTORY_POINTS, g_LastMemPct,
+            hMemDC, rcRam, 1, GetResString(IDS_GRAPH_RAM_TITLE), szRamSub,
+            g_PerfRamHistory, g_TopRamHistory, PERF_HISTORY_POINTS, g_LastMemPct,
             RGB(168, 85, 247), RGB(192, 132, 252),
             g_bDarkModeActive ? RGB(44, 24, 66) : RGB(243, 232, 255),
-            g_bDarkModeActive
+            g_bDarkModeActive, s_nHoverCard, s_nHoverX, s_nHoverY
         );
 
         // 3. Carte GPU (Cyan)
         RECT rcGpu = { (cardW + gap) * 2, 0, w, h };
-        WCHAR szGpuSub[64] = L"Moteur 3D • 60 secondes";
         DrawPerfCard(
-            hMemDC, rcGpu, L"GPU", szGpuSub,
-            g_PerfGpuHistory, PERF_HISTORY_POINTS, g_LastGpuPct,
+            hMemDC, rcGpu, 2, GetResString(IDS_GRAPH_GPU_TITLE), GetResString(IDS_GRAPH_GPU_SUB),
+            g_PerfGpuHistory, g_TopGpuHistory, PERF_HISTORY_POINTS, g_LastGpuPct,
             RGB(6, 182, 212), RGB(34, 211, 238),
             g_bDarkModeActive ? RGB(8, 44, 56) : RGB(207, 250, 254),
-            g_bDarkModeActive
+            g_bDarkModeActive, s_nHoverCard, s_nHoverX, s_nHoverY
         );
 
         BitBlt(hdc, 0, 0, w, h, hMemDC, 0, 0, SRCCOPY);
@@ -1631,9 +1894,9 @@ static LRESULT CALLBACK ListViewSubclassProc(
 
                     if (szText[0] == L'\0' && iCol >= 0 && iCol < COL_COUNT) {
                         if (iCol == g_SortColumn) {
-                            wsprintfW(szText, L"%s %s", s_BaseColumnTitles[iCol], g_bSortAscending ? L"▲" : L"▼");
+                            wsprintfW(szText, L"%s %s", GetColumnTitle(iCol), g_bSortAscending ? L"▲" : L"▼");
                         } else {
-                            wcsncpy_s(szText, 128, s_BaseColumnTitles[iCol], _TRUNCATE);
+                            wcsncpy_s(szText, 128, GetColumnTitle(iCol), _TRUNCATE);
                         }
                     }
 
@@ -1709,7 +1972,6 @@ static void ApplyModernWindowsTheme(HWND hWnd, HWND hListView) {
         if (g_hStatusBar) g_pfnAllowDarkModeForWindow(g_hStatusBar, g_bDarkModeActive);
         if (g_hBtnRefresh) g_pfnAllowDarkModeForWindow(g_hBtnRefresh, g_bDarkModeActive);
         if (g_hBtnAutoRefresh) g_pfnAllowDarkModeForWindow(g_hBtnAutoRefresh, g_bDarkModeActive);
-        if (g_hBtnKill) g_pfnAllowDarkModeForWindow(g_hBtnKill, g_bDarkModeActive);
         if (g_hBtnHideWindows) g_pfnAllowDarkModeForWindow(g_hBtnHideWindows, g_bDarkModeActive);
         if (g_hBtnExclusions) g_pfnAllowDarkModeForWindow(g_hBtnExclusions, g_bDarkModeActive);
         if (g_hEditSearch) g_pfnAllowDarkModeForWindow(g_hEditSearch, g_bDarkModeActive);
@@ -1845,7 +2107,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     HWND hWnd = CreateWindowExW(
         0,
         CLASS_NAME,
-        L"Gestionnaire des tâches Windows (C Win32 Natif)",
+        GetResString(IDS_APP_TITLE),
         WS_OVERLAPPEDWINDOW,
         CW_USEDEFAULT, CW_USEDEFAULT, 1260, 720,
         NULL, NULL, hInstance, NULL
@@ -1877,7 +2139,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     MSG msg;
     while (GetMessage(&msg, NULL, 0, 0)) {
         if (msg.message == WM_KEYDOWN && msg.wParam == VK_DELETE) {
-            if (GetFocus() == g_hListView || GetFocus() == g_hBtnKill) {
+            if (GetFocus() == g_hListView) {
                 TerminateSelectedProcessImmediately();
                 continue;
             }
@@ -1947,59 +2209,48 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         // 1. Bouton Auto-Refresh (reprend l'état chargé de settings.ini)
         g_hBtnAutoRefresh = CreateWindowExW(
             0, L"BUTTON",
-            g_bAutoRefresh ? L"Auto-refresh Oui" : L"Auto-refresh Non",
+            g_bAutoRefresh ? GetResString(IDS_BTN_AUTOREFRESH_ON) : GetResString(IDS_BTN_AUTOREFRESH_OFF),
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            10, 10, 160, 28,
+            10, 10, 150, 28,
             hWnd, (HMENU)IDC_BTN_AUTOREFRESH, GetModuleHandle(NULL), NULL
         );
         SendMessage(g_hBtnAutoRefresh, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         // 2. Bouton Actualiser
         g_hBtnRefresh = CreateWindowExW(
-            0, L"BUTTON", L"Actualiser (F5)",
+            0, L"BUTTON", GetResString(IDS_BTN_REFRESH),
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            175, 10, 105, 28,
+            165, 10, 115, 28,
             hWnd, (HMENU)IDC_BTN_REFRESH, GetModuleHandle(NULL), NULL
         );
         SendMessage(g_hBtnRefresh, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        // 3. Bouton Tuer Immédiatement
-        /*
-        g_hBtnKill = CreateWindowExW(
-            0, L"BUTTON", L"Terminer (Suppr)",
-            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            285, 10, 175, 28,
-            hWnd, (HMENU)IDC_BTN_KILL, GetModuleHandle(NULL), NULL
-        );
-        SendMessage(g_hBtnKill, WM_SETFONT, (WPARAM)hFont, TRUE);
-        */
-
-        // 4. Toggle pour Masquer les Processus Windows de Base
+        // 3. Toggle pour Masquer les Processus Windows de Base (décalé pour combler l'espace du bouton Suppr)
         g_hBtnHideWindows = CreateWindowExW(
             0, L"BUTTON",
-            g_bHideWindowsProcesses ? L"Windows Non" : L"Windows Oui",
+            g_bHideWindowsProcesses ? GetResString(IDS_BTN_WINDOWS_OFF) : GetResString(IDS_BTN_WINDOWS_ON),
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            465, 10, 185, 28,
+            285, 10, 145, 28,
             hWnd, (HMENU)IDC_BTN_HIDE_WINDOWS, GetModuleHandle(NULL), NULL
         );
         SendMessage(g_hBtnHideWindows, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        // 5. Bouton Gestion des Exclusions
+        // 4. Bouton Gestion des Exclusions
         WCHAR szExclText[64];
-        wsprintfW(szExclText, L"Exclusions (%d)", g_ExcludedCount);
+        wsprintfW(szExclText, GetResString(IDS_BTN_EXCLUSIONS_FMT), g_ExcludedCount);
         g_hBtnExclusions = CreateWindowExW(
             0, L"BUTTON", szExclText,
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            655, 10, 135, 28,
+            435, 10, 135, 28,
             hWnd, (HMENU)IDC_BTN_EXCLUSIONS, GetModuleHandle(NULL), NULL
         );
         SendMessage(g_hBtnExclusions, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        // 6. Recherche / Filtre
+        // 5. Recherche / Filtre
         HWND hStatic = CreateWindowExW(
-            0, L"STATIC", L"Filtrer :",
+            0, L"STATIC", GetResString(IDS_LABEL_FILTER),
             WS_CHILD | WS_VISIBLE | SS_RIGHT,
-            795, 14, 50, 20,
+            575, 14, 55, 20,
             hWnd, (HMENU)IDC_STATIC_SEARCH, GetModuleHandle(NULL), NULL
         );
         SendMessage(hStatic, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -2007,12 +2258,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         g_hEditSearch = CreateWindowExW(
             WS_EX_CLIENTEDGE, L"EDIT", L"",
             WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL,
-            850, 12, 180, 24,
+            635, 12, 180, 24,
             hWnd, (HMENU)IDC_EDIT_SEARCH, GetModuleHandle(NULL), NULL
         );
         SendMessage(g_hEditSearch, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        // 7. Bandeau graphique des performances (CPU, Mémoire RAM, GPU) au-dessus des processus
+        // 6. Bandeau graphique des performances (CPU, Mémoire RAM, GPU) au-dessus des processus
         g_hGraphBanner = CreateWindowExW(
             0, L"STATIC", L"",
             WS_CHILD | WS_VISIBLE | SS_NOTIFY,
@@ -2021,7 +2272,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         );
         SetWindowSubclass(g_hGraphBanner, GraphBannerSubclassProc, 30, 0);
 
-        // 8. Contrôle ListView SysListView32 avec bordure native subtile
+        // 7. Contrôle ListView SysListView32 avec bordure native subtile
         g_hListView = CreateWindowExW(
             WS_EX_CLIENTEDGE,
             WC_LISTVIEWW,
@@ -2039,7 +2290,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         InitListViewColumns(g_hListView);
 
-        // 9. Barre d'état StatusBar
+        // 8. Barre d'état StatusBar
         g_hStatusBar = CreateWindowExW(
             0, STATUSCLASSNAMEW, NULL,
             WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
@@ -2062,7 +2313,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         // Subclass des boutons pour un rendu sombre mat, feutré et non éblouissant
         SetWindowSubclass(g_hBtnAutoRefresh, ButtonSubclassProc, 10, 0);
         SetWindowSubclass(g_hBtnRefresh, ButtonSubclassProc, 11, 0);
-        SetWindowSubclass(g_hBtnKill, ButtonSubclassProc, 12, 0);
         SetWindowSubclass(g_hBtnHideWindows, ButtonSubclassProc, 13, 0);
         SetWindowSubclass(g_hBtnExclusions, ButtonSubclassProc, 14, 0);
 
@@ -2120,20 +2370,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
             WCHAR szHeader[128];
             if (uTrayId == TRAY_ID_CPU) {
-                swprintf_s(szHeader, sizeof(szHeader) / sizeof(WCHAR), L"Historique CPU : %.1f %%", g_LastCpuPct);
+                swprintf_s(szHeader, sizeof(szHeader) / sizeof(WCHAR), GetResString(IDS_TRAY_CPU_FMT), g_LastCpuPct);
             } else if (uTrayId == TRAY_ID_RAM) {
-                swprintf_s(szHeader, sizeof(szHeader) / sizeof(WCHAR), L"Historique RAM : %.1f %% (%.1f / %.1f Go)",
+                swprintf_s(szHeader, sizeof(szHeader) / sizeof(WCHAR), GetResString(IDS_TRAY_RAM_FMT),
                     g_LastMemPct, g_LastUsedRamGb, g_LastTotalRamGb);
             } else {
-                swprintf_s(szHeader, sizeof(szHeader) / sizeof(WCHAR), L"Historique GPU : %.1f %%", g_LastGpuPct);
+                swprintf_s(szHeader, sizeof(szHeader) / sizeof(WCHAR), GetResString(IDS_TRAY_GPU_FMT), g_LastGpuPct);
             }
 
             AppendMenuW(hTrayMenu, MF_STRING | MF_GRAYED, 0, szHeader);
             AppendMenuW(hTrayMenu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(hTrayMenu, MF_STRING, IDM_TRAY_OPEN, L"Ouvrir le Task Manager");
+            AppendMenuW(hTrayMenu, MF_STRING, IDM_TRAY_OPEN, GetResString(IDS_TRAY_OPEN));
             SetMenuDefaultItem(hTrayMenu, IDM_TRAY_OPEN, FALSE);
             AppendMenuW(hTrayMenu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(hTrayMenu, MF_STRING, IDM_TRAY_EXIT, L"Quitter définitivement");
+            AppendMenuW(hTrayMenu, MF_STRING, IDM_TRAY_EXIT, GetResString(IDS_TRAY_EXIT));
 
             SetForegroundWindow(hWnd);
             TrackPopupMenu(hTrayMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
@@ -2166,24 +2416,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             g_bAutoRefresh = !g_bAutoRefresh;
             if (g_bAutoRefresh) {
                 SetTimer(hWnd, IDT_REFRESH_TIMER, REFRESH_INTERVAL_MS, NULL);
-                SetWindowTextW(g_hBtnAutoRefresh, L"Auto-refresh Oui");
+                SetWindowTextW(g_hBtnAutoRefresh, GetResString(IDS_BTN_AUTOREFRESH_ON));
             } else {
                 KillTimer(hWnd, IDT_REFRESH_TIMER);
-                SetWindowTextW(g_hBtnAutoRefresh, L"Auto-refresh Non");
+                SetWindowTextW(g_hBtnAutoRefresh, GetResString(IDS_BTN_AUTOREFRESH_OFF));
             }
             SaveSettings();
-            break;
-
-        case IDC_BTN_KILL:
-            TerminateSelectedProcessImmediately();
             break;
 
         case IDC_BTN_HIDE_WINDOWS:
             g_bHideWindowsProcesses = !g_bHideWindowsProcesses;
             if (g_bHideWindowsProcesses) {
-                SetWindowTextW(g_hBtnHideWindows, L"Windows Non");
+                SetWindowTextW(g_hBtnHideWindows, GetResString(IDS_BTN_WINDOWS_OFF));
             } else {
-                SetWindowTextW(g_hBtnHideWindows, L"Windows Oui");
+                SetWindowTextW(g_hBtnHideWindows, GetResString(IDS_BTN_WINDOWS_ON));
             }
             SaveSettings();
             RefreshProcessList();
@@ -2193,16 +2439,16 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         case IDM_MANAGE_EXCLUSIONS: {
             HMENU hExclMenu = CreatePopupMenu();
             if (g_ExcludedCount == 0) {
-                AppendMenuW(hExclMenu, MF_STRING | MF_GRAYED, 0, L"(Aucun processus exclu par son nom)");
+                AppendMenuW(hExclMenu, MF_STRING | MF_GRAYED, 0, GetResString(IDS_MENU_NO_EXCLUSIONS));
             } else {
-                AppendMenuW(hExclMenu, MF_STRING | MF_GRAYED, 0, L"--- Cliquer pour réafficher ---");
+                AppendMenuW(hExclMenu, MF_STRING | MF_GRAYED, 0, GetResString(IDS_MENU_RESTORE_HEADER));
                 for (int i = 0; i < g_ExcludedCount && i < 255; i++) {
                     WCHAR szMenuText[MAX_PATH + 32];
-                    wsprintfW(szMenuText, L"Réafficher : %s", g_ExcludedProcesses[i]);
+                    swprintf_s(szMenuText, sizeof(szMenuText) / sizeof(WCHAR), GetResString(IDS_MENU_RESTORE_ITEM_FMT), g_ExcludedProcesses[i]);
                     AppendMenuW(hExclMenu, MF_STRING, IDM_RESTORE_EXCLUSION_BASE + i, szMenuText);
                 }
                 AppendMenuW(hExclMenu, MF_SEPARATOR, 0, NULL);
-                AppendMenuW(hExclMenu, MF_STRING, IDM_CLEAR_ALL_EXCLUSIONS, L"Tout réafficher (effacer les exclusions)");
+                AppendMenuW(hExclMenu, MF_STRING, IDM_CLEAR_ALL_EXCLUSIONS, GetResString(IDS_MENU_CLEAR_EXCLUSIONS));
             }
 
             POINT pt;
@@ -2412,29 +2658,29 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     WCHAR szProcName[MAX_PATH] = { 0 };
                     ListView_GetItemText(g_hListView, lpnmitem->iItem, COL_NAME, szProcName, MAX_PATH);
 
-                    AppendMenuW(hPopup, MF_STRING, IDM_KILL_IMMEDIATE, L"Tuer immédiatement\tSuppr");
+                    AppendMenuW(hPopup, MF_STRING, IDM_KILL_IMMEDIATE, GetResString(IDS_MENU_KILL_IMMEDIATE));
                     AppendMenuW(hPopup, MF_SEPARATOR, 0, NULL);
 
-                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_REALTIME, L"Temps réel");
-                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_HIGH, L"Haute");
-                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_ABOVENORM, L"Supérieure à la normale");
-                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_NORMAL, L"Normale");
-                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_BELOWNORM, L"Inférieure à la normale");
-                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_IDLE, L"Basse (Idle)");
+                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_REALTIME, GetResString(IDS_MENU_PRIORITY_REALTIME));
+                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_HIGH, GetResString(IDS_MENU_PRIORITY_HIGH));
+                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_ABOVENORM, GetResString(IDS_MENU_PRIORITY_ABOVENORM));
+                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_NORMAL, GetResString(IDS_MENU_PRIORITY_NORMAL));
+                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_BELOWNORM, GetResString(IDS_MENU_PRIORITY_BELOWNORM));
+                    AppendMenuW(hSubPriority, MF_STRING, IDM_PRIORITY_IDLE, GetResString(IDS_MENU_PRIORITY_IDLE));
 
-                    AppendMenuW(hPopup, MF_POPUP, (UINT_PTR)hSubPriority, L"Définir la priorité");
+                    AppendMenuW(hPopup, MF_POPUP, (UINT_PTR)hSubPriority, GetResString(IDS_MENU_SET_PRIORITY));
                     AppendMenuW(hPopup, MF_SEPARATOR, 0, NULL);
-                    AppendMenuW(hPopup, MF_STRING, IDM_COPY_CMDLINE, L"Copier la ligne de commande (CLI)");
-                    AppendMenuW(hPopup, MF_STRING, IDM_OPEN_LOCATION, L"Ouvrir l'emplacement du fichier");
+                    AppendMenuW(hPopup, MF_STRING, IDM_COPY_CMDLINE, GetResString(IDS_MENU_COPY_CMDLINE));
+                    AppendMenuW(hPopup, MF_STRING, IDM_OPEN_LOCATION, GetResString(IDS_MENU_OPEN_LOCATION));
                     AppendMenuW(hPopup, MF_SEPARATOR, 0, NULL);
 
                     // Option pour masquer ce processus par son nom
                     if (szProcName[0] != L'\0') {
                         WCHAR szHideText[MAX_PATH + 64];
-                        wsprintfW(szHideText, L"Masquer \"%s\" par son nom", szProcName);
+                        swprintf_s(szHideText, sizeof(szHideText) / sizeof(WCHAR), GetResString(IDS_MENU_HIDE_BY_NAME_FMT), szProcName);
                         AppendMenuW(hPopup, MF_STRING, IDM_HIDE_BY_NAME, szHideText);
                     }
-                    AppendMenuW(hPopup, MF_STRING, IDM_MANAGE_EXCLUSIONS, L"Gérer les processus exclus...");
+                    AppendMenuW(hPopup, MF_STRING, IDM_MANAGE_EXCLUSIONS, GetResString(IDS_MENU_MANAGE_EXCLUSIONS));
 
                     POINT pt;
                     GetCursorPos(&pt);
@@ -2497,7 +2743,6 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         }
         if (g_hBtnAutoRefresh) RemoveWindowSubclass(g_hBtnAutoRefresh, ButtonSubclassProc, 10);
         if (g_hBtnRefresh)     RemoveWindowSubclass(g_hBtnRefresh, ButtonSubclassProc, 11);
-        if (g_hBtnKill)        RemoveWindowSubclass(g_hBtnKill, ButtonSubclassProc, 12);
         if (g_hBtnHideWindows) RemoveWindowSubclass(g_hBtnHideWindows, ButtonSubclassProc, 13);
         if (g_hBtnExclusions)  RemoveWindowSubclass(g_hBtnExclusions, ButtonSubclassProc, 14);
         if (g_hStatusBar)      RemoveWindowSubclass(g_hStatusBar, StatusBarSubclassProc, 20);
@@ -2555,7 +2800,7 @@ void InitListViewColumns(HWND hListView) {
         lvc.iSubItem = i;
         lvc.cx = colWidths[i];
         lvc.fmt = colFmts[i];
-        lvc.pszText = (LPWSTR)s_BaseColumnTitles[i];
+        lvc.pszText = (LPWSTR)GetColumnTitle(i);
         ListView_InsertColumn(hListView, i, &lvc);
     }
 
@@ -2571,9 +2816,9 @@ void UpdateHeaderSortArrow(void) {
         WCHAR szTitle[128];
         if (i == g_SortColumn) {
             // Symbole visuel explicite directement dans le texte de la colonne triée
-            wsprintfW(szTitle, L"%s %s", s_BaseColumnTitles[i], g_bSortAscending ? L"▲" : L"▼");
+            wsprintfW(szTitle, L"%s %s", GetColumnTitle(i), g_bSortAscending ? L"▲" : L"▼");
         } else {
-            wcscpy_s(szTitle, sizeof(szTitle)/sizeof(WCHAR), s_BaseColumnTitles[i]);
+            wcscpy_s(szTitle, sizeof(szTitle)/sizeof(WCHAR), GetColumnTitle(i));
         }
 
         LVCOLUMNW lvc = { 0 };
@@ -2668,7 +2913,7 @@ void GetProcessCommandLine(HANDLE hProcess, WCHAR *pszCmdLine, DWORD maxChars) {
     pszCmdLine[0] = L'\0';
 
     if (!g_pfnNtQueryInfoProcess) {
-        wcsncpy_s(pszCmdLine, maxChars, L"[Non disponible - NTAPI absente]", _TRUNCATE);
+        wcsncpy_s(pszCmdLine, maxChars, GetResString(IDS_STR_NO_NTAPI), _TRUNCATE);
         return;
     }
 
@@ -2676,20 +2921,20 @@ void GetProcessCommandLine(HANDLE hProcess, WCHAR *pszCmdLine, DWORD maxChars) {
     ULONG len = 0;
     NTSTATUS status = g_pfnNtQueryInfoProcess(hProcess, ProcessBasicInformation, &pbi, sizeof(pbi), &len);
     if (status != 0 || !pbi.PebBaseAddress) {
-        wcsncpy_s(pszCmdLine, maxChars, L"[Accès restreint]", _TRUNCATE);
+        wcsncpy_s(pszCmdLine, maxChars, GetResString(IDS_STR_RESTRICTED_ACCESS), _TRUNCATE);
         return;
     }
 
     PEB peb;
     SIZE_T bytesRead = 0;
     if (!ReadProcessMemory(hProcess, pbi.PebBaseAddress, &peb, sizeof(peb), &bytesRead) || bytesRead == 0) {
-        wcsncpy_s(pszCmdLine, maxChars, L"[Accès restreint PEB]", _TRUNCATE);
+        wcsncpy_s(pszCmdLine, maxChars, GetResString(IDS_STR_RESTRICTED_ACCESS), _TRUNCATE);
         return;
     }
 
     RTL_USER_PROCESS_PARAMETERS procParams;
     if (!ReadProcessMemory(hProcess, peb.ProcessParameters, &procParams, sizeof(procParams), &bytesRead) || bytesRead == 0) {
-        wcsncpy_s(pszCmdLine, maxChars, L"[Accès restreint Param]", _TRUNCATE);
+        wcsncpy_s(pszCmdLine, maxChars, GetResString(IDS_STR_RESTRICTED_ACCESS), _TRUNCATE);
         return;
     }
 
@@ -2707,20 +2952,20 @@ void GetProcessCommandLine(HANDLE hProcess, WCHAR *pszCmdLine, DWORD maxChars) {
     if (ReadProcessMemory(hProcess, procParams.CommandLine.Buffer, pszCmdLine, toRead, &bytesRead) && bytesRead > 0) {
         pszCmdLine[bytesRead / sizeof(WCHAR)] = L'\0';
     } else {
-        wcsncpy_s(pszCmdLine, maxChars, L"[Erreur lecture CLI]", _TRUNCATE);
+        wcsncpy_s(pszCmdLine, maxChars, GetResString(IDS_STR_RESTRICTED_ACCESS), _TRUNCATE);
     }
 }
 
 // Traduction de la classe de priorité en texte lisible
 const WCHAR* PriorityClassToString(DWORD priorityClass) {
     switch (priorityClass) {
-    case REALTIME_PRIORITY_CLASS:     return L"Temps réel";
-    case HIGH_PRIORITY_CLASS:         return L"Haute";
-    case ABOVE_NORMAL_PRIORITY_CLASS: return L"Supérieure";
-    case NORMAL_PRIORITY_CLASS:       return L"Normale";
-    case BELOW_NORMAL_PRIORITY_CLASS: return L"Inférieure";
-    case IDLE_PRIORITY_CLASS:         return L"Basse";
-    default:                          return L"Inconnue";
+    case REALTIME_PRIORITY_CLASS:     return GetResString(IDS_PRIO_REALTIME);
+    case HIGH_PRIORITY_CLASS:         return GetResString(IDS_PRIO_HIGH);
+    case ABOVE_NORMAL_PRIORITY_CLASS: return GetResString(IDS_PRIO_ABOVENORM);
+    case NORMAL_PRIORITY_CLASS:       return GetResString(IDS_PRIO_NORMAL);
+    case BELOW_NORMAL_PRIORITY_CLASS: return GetResString(IDS_PRIO_BELOWNORM);
+    case IDLE_PRIORITY_CLASS:         return GetResString(IDS_PRIO_IDLE);
+    default:                          return GetResString(IDS_PRIO_UNKNOWN);
     }
 }
 
@@ -2728,10 +2973,10 @@ const WCHAR* PriorityClassToString(DWORD priorityClass) {
 void UpdateStatusBar(int displayedCount, int totalCount, double totalCpu) {
     WCHAR szText[128];
 
-    wsprintfW(szText, L"Processus : %d / %d", displayedCount, totalCount);
+    swprintf_s(szText, sizeof(szText) / sizeof(WCHAR), GetResString(IDS_STATUS_PROCESSES_FMT), displayedCount, totalCount);
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 0, (LPARAM)szText);
 
-    wsprintfW(szText, L"CPU Global : %.1f %%", totalCpu);
+    swprintf_s(szText, sizeof(szText) / sizeof(WCHAR), GetResString(IDS_STATUS_CPU_FMT), totalCpu);
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 1, (LPARAM)szText);
 
     MEMORYSTATUSEX memStatus;
@@ -2739,13 +2984,13 @@ void UpdateStatusBar(int displayedCount, int totalCount, double totalCpu) {
     if (GlobalMemoryStatusEx(&memStatus)) {
         DWORD totalMB = (DWORD)(memStatus.ullTotalPhys / (1024 * 1024));
         DWORD usedMB  = (DWORD)((memStatus.ullTotalPhys - memStatus.ullAvailPhys) / (1024 * 1024));
-        wsprintfW(szText, L"RAM : %u / %u Mo (%u %%)", usedMB, totalMB, memStatus.dwMemoryLoad);
+        swprintf_s(szText, sizeof(szText) / sizeof(WCHAR), GetResString(IDS_STATUS_RAM_FMT), usedMB, totalMB, memStatus.dwMemoryLoad);
         SendMessageW(g_hStatusBar, SB_SETTEXTW, 2, (LPARAM)szText);
     }
 
-    wsprintfW(szText, L"Exclusions : %d actives | Tri : %s %s",
+    swprintf_s(szText, sizeof(szText) / sizeof(WCHAR), GetResString(IDS_STATUS_EXCLUSIONS_FMT),
         g_ExcludedCount,
-        s_BaseColumnTitles[g_SortColumn],
+        GetColumnTitle(g_SortColumn),
         g_bSortAscending ? L"▲" : L"▼"
     );
     SendMessageW(g_hStatusBar, SB_SETTEXTW, 3, (LPARAM)szText);
@@ -2899,7 +3144,7 @@ void RefreshProcessList(void) {
 
             CloseHandle(hProcess);
         } else {
-            wcsncpy_s(proc->szCmdLine, 1024, L"[Système / Accès restreint]", _TRUNCATE);
+            wcsncpy_s(proc->szCmdLine, 1024, GetResString(IDS_STR_RESTRICTED), _TRUNCATE);
         }
 
         // Détection de processus Windows de base
@@ -2934,23 +3179,75 @@ void RefreshProcessList(void) {
     // Mise à jour des 3 icônes d'historique (CPU, RAM, GPU) dans la barre des tâches
     UpdateTrayIcons(totalCpuPercent, memPercent, totalGpuPercent, usedRamGb, totalRamGb);
 
-    // Mise à jour de l'historique 60s pour les graphiques CPU / RAM / GPU du bandeau
+    // 1. Détection du top consommateur pour CPU, RAM et GPU à cette seconde précise
+    TopConsumer top1Cpu, top1Ram, top1Gpu;
+    top1Cpu.szName[0] = top1Ram.szName[0] = top1Gpu.szName[0] = L'\0';
+    top1Cpu.value = top1Ram.value = top1Gpu.value = -1.0;
+    top1Cpu.pid = top1Ram.pid = top1Gpu.pid = 0;
+
+    for (int i = 0; i < g_ProcessCount; i++) {
+        if (g_Processes[i].pid == 0) continue; // Ignorer System Idle Process
+        if (g_Processes[i].cpuPercent > top1Cpu.value) {
+            top1Cpu.value = g_Processes[i].cpuPercent;
+            top1Cpu.pid = g_Processes[i].pid;
+            wcsncpy_s(top1Cpu.szName, 32, g_Processes[i].szName, _TRUNCATE);
+        }
+        if ((double)g_Processes[i].workingSetMB > top1Ram.value) {
+            top1Ram.value = (double)g_Processes[i].workingSetMB;
+            top1Ram.pid = g_Processes[i].pid;
+            wcsncpy_s(top1Ram.szName, 32, g_Processes[i].szName, _TRUNCATE);
+        }
+        if (g_Processes[i].gpuPercent > top1Gpu.value) {
+            top1Gpu.value = g_Processes[i].gpuPercent;
+            top1Gpu.pid = g_Processes[i].pid;
+            wcsncpy_s(top1Gpu.szName, 32, g_Processes[i].szName, _TRUNCATE);
+        }
+    }
+
+    // 2. Mise à jour de l'historique 1 heure (3600 secondes) pour les graphiques CPU / RAM / GPU du bandeau
     if (g_PerfHistoryCount == 0) {
         for (int i = 0; i < PERF_HISTORY_POINTS; i++) {
             g_PerfCpuHistory[i] = totalCpuPercent;
             g_PerfRamHistory[i] = memPercent;
             g_PerfGpuHistory[i] = totalGpuPercent;
+
+            wcsncpy_s(g_TopCpuHistory[i].szName, 32, top1Cpu.szName, _TRUNCATE);
+            g_TopCpuHistory[i].pid = top1Cpu.pid;
+            g_TopCpuHistory[i].usage = (float)(top1Cpu.value > 0.0 ? top1Cpu.value : 0.0);
+
+            wcsncpy_s(g_TopRamHistory[i].szName, 32, top1Ram.szName, _TRUNCATE);
+            g_TopRamHistory[i].pid = top1Ram.pid;
+            g_TopRamHistory[i].usage = (float)(top1Ram.value > 0.0 ? top1Ram.value : 0.0);
+
+            wcsncpy_s(g_TopGpuHistory[i].szName, 32, top1Gpu.szName, _TRUNCATE);
+            g_TopGpuHistory[i].pid = top1Gpu.pid;
+            g_TopGpuHistory[i].usage = (float)(top1Gpu.value > 0.0 ? top1Gpu.value : 0.0);
         }
         g_PerfHistoryCount = PERF_HISTORY_POINTS;
     } else {
-        for (int i = 0; i < PERF_HISTORY_POINTS - 1; i++) {
-            g_PerfCpuHistory[i] = g_PerfCpuHistory[i + 1];
-            g_PerfRamHistory[i] = g_PerfRamHistory[i + 1];
-            g_PerfGpuHistory[i] = g_PerfGpuHistory[i + 1];
-        }
+        memmove(&g_PerfCpuHistory[0], &g_PerfCpuHistory[1], (PERF_HISTORY_POINTS - 1) * sizeof(double));
+        memmove(&g_PerfRamHistory[0], &g_PerfRamHistory[1], (PERF_HISTORY_POINTS - 1) * sizeof(double));
+        memmove(&g_PerfGpuHistory[0], &g_PerfGpuHistory[1], (PERF_HISTORY_POINTS - 1) * sizeof(double));
+
+        memmove(&g_TopCpuHistory[0], &g_TopCpuHistory[1], (PERF_HISTORY_POINTS - 1) * sizeof(TopProcSample));
+        memmove(&g_TopRamHistory[0], &g_TopRamHistory[1], (PERF_HISTORY_POINTS - 1) * sizeof(TopProcSample));
+        memmove(&g_TopGpuHistory[0], &g_TopGpuHistory[1], (PERF_HISTORY_POINTS - 1) * sizeof(TopProcSample));
+
         g_PerfCpuHistory[PERF_HISTORY_POINTS - 1] = totalCpuPercent;
         g_PerfRamHistory[PERF_HISTORY_POINTS - 1] = memPercent;
         g_PerfGpuHistory[PERF_HISTORY_POINTS - 1] = totalGpuPercent;
+
+        wcsncpy_s(g_TopCpuHistory[PERF_HISTORY_POINTS - 1].szName, 32, top1Cpu.szName, _TRUNCATE);
+        g_TopCpuHistory[PERF_HISTORY_POINTS - 1].pid = top1Cpu.pid;
+        g_TopCpuHistory[PERF_HISTORY_POINTS - 1].usage = (float)(top1Cpu.value > 0.0 ? top1Cpu.value : 0.0);
+
+        wcsncpy_s(g_TopRamHistory[PERF_HISTORY_POINTS - 1].szName, 32, top1Ram.szName, _TRUNCATE);
+        g_TopRamHistory[PERF_HISTORY_POINTS - 1].pid = top1Ram.pid;
+        g_TopRamHistory[PERF_HISTORY_POINTS - 1].usage = (float)(top1Ram.value > 0.0 ? top1Ram.value : 0.0);
+
+        wcsncpy_s(g_TopGpuHistory[PERF_HISTORY_POINTS - 1].szName, 32, top1Gpu.szName, _TRUNCATE);
+        g_TopGpuHistory[PERF_HISTORY_POINTS - 1].pid = top1Gpu.pid;
+        g_TopGpuHistory[PERF_HISTORY_POINTS - 1].usage = (float)(top1Gpu.value > 0.0 ? top1Gpu.value : 0.0);
     }
 
     if (g_hGraphBanner && IsWindow(g_hGraphBanner)) {

@@ -13,10 +13,10 @@ RES = resource.o
 
 all: $(TARGET)
 
-$(RES): $(RC) app.ico taskmgr.manifest
+$(RES): $(RC) app.ico taskmgr.manifest resource.h
 	$(WINDRES) $(RC) -O coff -o $(RES)
 
-$(TARGET): $(SRC) $(RES)
+$(TARGET): $(SRC) $(RES) resource.h
 	-taskkill /IM $(TARGET) /F
 	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(RES) $(LIBS)
 	@echo Compilation terminee avec succes : $(TARGET)

@@ -1,10 +1,96 @@
 // Resource file pour le Gestionnaire des tâches Win32 natif
-#define IDI_APP_ICON 1
-#define CREATEPROCESS_MANIFEST_RESOURCE_ID 1
-#define RT_MANIFEST 24
+#include "resource.h"
 
 // 1ère icône du binaire PE = icône par défaut de l'exécutable sous l'explorateur Windows
 IDI_APP_ICON ICON "app.ico"
 
 // Manifeste Windows moderne pour activer les Styles Visuels (Common Controls v6 - Adieu le thème 98 !)
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "taskmgr.manifest"
+
+// Table des chaînes de caractères centralisée (STRINGTABLE)
+STRINGTABLE
+BEGIN
+    IDS_APP_TITLE               "Gestionnaire des tâches Windows (C Win32 Natif)"
+
+    // Colonnes de la ListView
+    IDS_COL_NAME                "Nom de l'image"
+    IDS_COL_PID                 "PID"
+    IDS_COL_CPU                 "CPU %"
+    IDS_COL_RAM                 "Mémoire (Mo)"
+    IDS_COL_DISK                "Disque (Mo/s)"
+    IDS_COL_NET                 "Réseau (Ko/s)"
+    IDS_COL_GPU                 "GPU %"
+    IDS_COL_PRIORITY            "Priorité"
+    IDS_COL_CMDLINE             "Ligne de commande (CLI Args)"
+
+    // Boutons de la barre d'outils
+    IDS_BTN_AUTOREFRESH_ON      "Auto-refresh Oui"
+    IDS_BTN_AUTOREFRESH_OFF     "Auto-refresh Non"
+    IDS_BTN_REFRESH             "Actualiser (F5)"
+    IDS_BTN_WINDOWS_ON          "Windows Oui"
+    IDS_BTN_WINDOWS_OFF         "Windows Non"
+    IDS_BTN_EXCLUSIONS_FMT      "Exclusions (%d)"
+    IDS_LABEL_FILTER            "Filtrer :"
+
+    // Menu contextuel
+    IDS_MENU_KILL_IMMEDIATE     "Tuer immédiatement\tSuppr"
+    IDS_MENU_PRIORITY_REALTIME  "Temps réel"
+    IDS_MENU_PRIORITY_HIGH      "Haute"
+    IDS_MENU_PRIORITY_ABOVENORM "Supérieure à la normale"
+    IDS_MENU_PRIORITY_NORMAL    "Normale"
+    IDS_MENU_PRIORITY_BELOWNORM "Inférieure à la normale"
+    IDS_MENU_PRIORITY_IDLE      "Basse (Idle)"
+    IDS_MENU_SET_PRIORITY       "Définir la priorité"
+    IDS_MENU_COPY_CMDLINE       "Copier la ligne de commande (CLI)"
+    IDS_MENU_OPEN_LOCATION      "Ouvrir l'emplacement du fichier"
+    IDS_MENU_HIDE_BY_NAME_FMT   "Masquer \"%s\" par son nom"
+    IDS_MENU_MANAGE_EXCLUSIONS  "Gérer les processus exclus..."
+    IDS_MENU_NO_EXCLUSIONS      "(Aucun processus exclu par son nom)"
+    IDS_MENU_RESTORE_HEADER     "--- Cliquer pour réafficher ---"
+    IDS_MENU_RESTORE_ITEM_FMT   "Réafficher : %s"
+    IDS_MENU_CLEAR_EXCLUSIONS   "Tout réafficher (effacer les exclusions)"
+
+    // Zone de notification (System Tray)
+    IDS_TRAY_OPEN               "Ouvrir le Task Manager"
+    IDS_TRAY_EXIT               "Quitter définitivement"
+    IDS_TRAY_CPU_FMT            "Historique CPU : %.1f %%"
+    IDS_TRAY_RAM_FMT            "Historique RAM : %.1f %% (%.1f / %.1f Go)"
+    IDS_TRAY_GPU_FMT            "Historique GPU : %.1f %%"
+
+    // Barre d'état (Status Bar)
+    IDS_STATUS_PROCESSES_FMT    "Processus : %d / %d"
+    IDS_STATUS_CPU_FMT          "CPU Global : %.1f %%"
+    IDS_STATUS_RAM_FMT          "RAM : %u / %u Mo (%u %%)"
+    IDS_STATUS_EXCLUSIONS_FMT   "Exclusions : %d actives | Tri : %s %s"
+
+    // Graphiques de performances 1 heure
+    IDS_GRAPH_CPU_TITLE         "CPU"
+    IDS_GRAPH_CPU_SUB           "1 heure • % d'utilisation"
+    IDS_GRAPH_RAM_TITLE         "Mémoire"
+    IDS_GRAPH_RAM_SUB_FMT       "%.1f / %.1f Go (1h)"
+    IDS_GRAPH_RAM_SUB_DEFAULT   "Utilisation mémoire (1h)"
+    IDS_GRAPH_GPU_TITLE         "GPU"
+    IDS_GRAPH_GPU_SUB           "Moteur 3D • 1 heure"
+
+    // Infobulles / Tooltips d'historique 1h
+    IDS_TIP_TIME_MIN_SEC        "Il y a %dm %02ds"
+    IDS_TIP_TIME_SEC            "Il y a %ds"
+    IDS_TIP_TOP_PROC            "Top : %s (PID %u)"
+    IDS_TIP_USAGE_PCT           "Utilisation : %.1f %%"
+    IDS_TIP_USAGE_RAM           "Mémoire : %u Mo"
+    IDS_TIP_NO_DATA             "Aucune activité"
+
+    // Classes de priorité (affichage de liste)
+    IDS_PRIO_REALTIME           "Temps réel"
+    IDS_PRIO_HIGH               "Haute"
+    IDS_PRIO_ABOVENORM          "Supérieure"
+    IDS_PRIO_NORMAL             "Normale"
+    IDS_PRIO_BELOWNORM          "Inférieure"
+    IDS_PRIO_IDLE               "Basse"
+    IDS_PRIO_UNKNOWN            "Inconnue"
+
+    // CLI restreinte
+    IDS_STR_RESTRICTED          "[Système / Accès restreint]"
+    IDS_STR_RESTRICTED_ACCESS   "[Accès restreint]"
+    IDS_STR_NO_NTAPI            "[Non disponible - NTAPI absente]"
+END

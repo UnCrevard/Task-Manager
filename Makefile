@@ -3,7 +3,7 @@
 
 CC ?= gcc
 WINDRES ?= windres
-CFLAGS = -mwindows -O2 -s -static -Wall -Wextra
+CFLAGS = -mwindows -O2 -s -static -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
 LIBS = -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32 -luxtheme -ldwmapi
 
 TARGET = taskmgr.exe
@@ -14,7 +14,7 @@ RES = resource.o
 all: $(TARGET)
 
 $(RES): $(RC) app.ico taskmgr.manifest resource.h
-	$(WINDRES) $(RC) -O coff -o $(RES)
+	$(WINDRES) --codepage=65001 $(RC) -O coff -o $(RES)
 
 $(TARGET): $(SRC) $(RES) resource.h
 	-taskkill /IM $(TARGET) /F

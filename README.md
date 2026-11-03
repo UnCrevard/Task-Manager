@@ -78,19 +78,19 @@ mingw32-make
 ```
 *(Cette commande compile automatiquement `resource.rc` avec `windres` puis lie `resource.o` à `taskmgr.exe`).*
 
-### Option 2 : Compilation manuelle en 2 étapes (avec icône dans l'explorateur)
+### Option 2 : Compilation manuelle en 2 étapes (avec icône et encodage UTF-8)
 
 ```cmd
-windres resource.rc -O coff -o resource.o
-gcc -mwindows -O2 -Wall -Wextra -o taskmgr.exe taskmgr.c resource.o -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32
+windres --codepage=65001 resource.rc -O coff -o resource.o
+gcc -mwindows -O2 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8 -o taskmgr.exe taskmgr.c resource.o -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32 -luxtheme -ldwmapi
 ```
 
 ### Option 3 : Compilation directe ultra-simple (1 seule ligne)
 
 ```cmd
-gcc -mwindows -O2 -Wall -Wextra -o taskmgr.exe taskmgr.c -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32
+gcc -mwindows -O2 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8 -o taskmgr.exe taskmgr.c -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32 -luxtheme -ldwmapi
 ```
-*(Le fallback automatique dans `taskmgr.c` générera l'icône en mémoire au lancement de l'application).*
+*(Le fallback automatique dans `taskmgr.c` générera l'icône en mémoire et les chaînes UTF-16 natives au lancement de l'application).*
 
 ---
 

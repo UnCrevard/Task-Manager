@@ -1,5 +1,10 @@
+#pragma code_page(65001)
+
 // Resource file pour le Gestionnaire des tâches Win32 natif
 #include "resource.h"
+
+// Définition de la langue neutre pour un encodage universel UTF-8
+LANGUAGE LANG_NEUTRAL, SUBLANG_NEUTRAL
 
 // 1ère icône du binaire PE = icône par défaut de l'exécutable sous l'explorateur Windows
 IDI_APP_ICON ICON "app.ico"

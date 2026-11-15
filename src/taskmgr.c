@@ -45,6 +45,7 @@
 #include <string.h>
 #include <math.h>
 #include "resource.h"
+#include "version.h"
 
 #ifdef _MSC_VER
 // Activation du style visuel Windows moderne sous MSVC
@@ -72,6 +73,14 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #define IDC_BTN_HIDE_WINDOWS 1009
 #define IDC_BTN_EXCLUSIONS   1010
 #define IDC_GRAPH_BANNER     1011
+#define IDC_BTN_SETTINGS     1012
+#define IDC_BTN_ABOUT        1013
+
+// Contrôles des fenêtres modales Paramètres et À propos
+#define IDC_SET_COMBO_LANG   6001
+#define IDC_SET_CHK_AUTO     6002
+#define IDC_SET_CHK_HIDEWIN  6003
+#define IDC_SET_ACTIVE_LANG  6004
 
 // Identifiants du Timer
 #define IDT_REFRESH_TIMER    2001
@@ -114,9 +123,20 @@ enum {
     COL_COUNT
 };
 
-// Prototypes des fonctions d'accès aux ressources
+// Langues prises en charge
+typedef enum {
+    APP_LANG_AUTO = 0,
+    APP_LANG_EN   = 1,
+    APP_LANG_FR   = 2
+} AppLanguage;
+
+// Prototypes des fonctions d'accès aux ressources et multilingue
+int GetEffectiveLanguage(void);
 const WCHAR* GetResString(UINT uID);
 const WCHAR* GetColumnTitle(int col);
+void ApplyLanguageToUI(HWND hWnd);
+void ShowSettingsDialog(HWND hParent);
+void ShowAboutDialog(HWND hParent);
 
 // Structure de stockage de métriques d'un processus
 typedef struct {
@@ -169,6 +189,7 @@ static int g_SortColumn = COL_CPU; // Tri par défaut sur le CPU
 static BOOL g_bSortAscending = FALSE; // Tri décroissant (processus les plus actifs en premier)
 static BOOL g_bHideWindowsProcesses = FALSE; // Toggle pour masquer les processus de base Windows
 static BOOL g_bAutoRefresh = TRUE; // Auto-refresh à 1s
+static int g_nLanguageSetting = APP_LANG_AUTO; // Langue (Auto = système, repli Anglais)
 
 // Identifiants et état des 3 Tray Icons (CPU, RAM, GPU) avec historique
 #define TRAY_ID_CPU 1
@@ -230,7 +251,10 @@ static HWND g_hBtnRefresh = NULL;
 static HWND g_hBtnAutoRefresh = NULL;
 static HWND g_hBtnHideWindows = NULL;
 static HWND g_hBtnExclusions = NULL;
+static HWND g_hStaticSearch = NULL;
 static HWND g_hEditSearch = NULL;
+static HWND g_hBtnSettings = NULL;
+static HWND g_hBtnAbout = NULL;
 static WCHAR g_szSearchFilter[128] = { 0 };
 static HFONT g_hFont = NULL;
 static HFONT g_hFontBold = NULL;
@@ -293,6 +317,18 @@ void RemoveAllTrayIcons(void);
 #define RES_BUF_COUNT 16
 #define RES_BUF_LEN 256
 
+int GetEffectiveLanguage(void) {
+    if (g_nLanguageSetting == APP_LANG_EN) return APP_LANG_EN;
+    if (g_nLanguageSetting == APP_LANG_FR) return APP_LANG_FR;
+
+    // Mode Auto : langue UI du système Windows, repli sur l'anglais si non supportée
+    LANGID langId = GetUserDefaultUILanguage();
+    if (PRIMARYLANGID(langId) == LANG_FRENCH) {
+        return APP_LANG_FR;
+    }
+    return APP_LANG_EN;
+}
+
 const WCHAR* GetResString(UINT uID) {
     static WCHAR s_bufs[RES_BUF_COUNT][RES_BUF_LEN];
     static int s_bufIdx = 0;
@@ -300,77 +336,104 @@ const WCHAR* GetResString(UINT uID) {
     int idx = s_bufIdx;
     s_bufIdx = (s_bufIdx + 1) % RES_BUF_COUNT;
 
-    if (LoadStringW(GetModuleHandleW(NULL), uID, s_bufs[idx], RES_BUF_LEN) > 0) {
+    int effLang = GetEffectiveLanguage();
+    UINT targetID = (effLang == APP_LANG_EN) ? EN_ID(uID) : uID;
+
+    if (LoadStringW(GetModuleHandleW(NULL), targetID, s_bufs[idx], RES_BUF_LEN) > 0) {
         return s_bufs[idx];
     }
 
-    // Valeur de secours (fallback) si l'exécutable est compilé sans le fichier de ressources lié
+    // Valeur de secours (fallback) bilingue si l'exécutable est compilé sans .rc lié
+    BOOL bEn = (effLang == APP_LANG_EN);
     switch (uID) {
-    case IDS_APP_TITLE: return L"Gestionnaire des tâches Windows (C Win32 Natif)";
-    case IDS_COL_NAME: return L"Nom de l'image";
+    case IDS_APP_TITLE: return bEn ? L"Windows Task Manager (Native C Win32)" : L"Gestionnaire des tâches Windows (C Win32 Natif)";
+    case IDS_COL_NAME: return bEn ? L"Image Name" : L"Nom de l'image";
     case IDS_COL_PID: return L"PID";
     case IDS_COL_CPU: return L"CPU %";
-    case IDS_COL_RAM: return L"Mémoire (Mo)";
-    case IDS_COL_DISK: return L"Disque (Mo/s)";
-    case IDS_COL_NET: return L"Réseau (Ko/s)";
+    case IDS_COL_RAM: return bEn ? L"Memory (MB)" : L"Mémoire (Mo)";
+    case IDS_COL_DISK: return bEn ? L"Disk (MB/s)" : L"Disque (Mo/s)";
+    case IDS_COL_NET: return bEn ? L"Network (KB/s)" : L"Réseau (Ko/s)";
     case IDS_COL_GPU: return L"GPU %";
-    case IDS_COL_PRIORITY: return L"Priorité";
-    case IDS_COL_CMDLINE: return L"Ligne de commande (CLI Args)";
-    case IDS_BTN_AUTOREFRESH_ON: return L"Auto-refresh Oui";
-    case IDS_BTN_AUTOREFRESH_OFF: return L"Auto-refresh Non";
-    case IDS_BTN_REFRESH: return L"Actualiser (F5)";
-    case IDS_BTN_WINDOWS_ON: return L"Windows Oui";
-    case IDS_BTN_WINDOWS_OFF: return L"Windows Non";
+    case IDS_COL_PRIORITY: return bEn ? L"Priority" : L"Priorité";
+    case IDS_COL_CMDLINE: return bEn ? L"Command Line (CLI Args)" : L"Ligne de commande (CLI Args)";
+    case IDS_BTN_AUTOREFRESH_ON: return bEn ? L"Auto-refresh On" : L"Auto-refresh Oui";
+    case IDS_BTN_AUTOREFRESH_OFF: return bEn ? L"Auto-refresh Off" : L"Auto-refresh Non";
+    case IDS_BTN_REFRESH: return bEn ? L"Refresh (F5)" : L"Actualiser (F5)";
+    case IDS_BTN_WINDOWS_ON: return bEn ? L"Windows On" : L"Windows Oui";
+    case IDS_BTN_WINDOWS_OFF: return bEn ? L"Windows Off" : L"Windows Non";
     case IDS_BTN_EXCLUSIONS_FMT: return L"Exclusions (%d)";
-    case IDS_LABEL_FILTER: return L"Filtrer :";
-    case IDS_MENU_KILL_IMMEDIATE: return L"Tuer immédiatement\tSuppr";
-    case IDS_MENU_PRIORITY_REALTIME: return L"Temps réel";
-    case IDS_MENU_PRIORITY_HIGH: return L"Haute";
-    case IDS_MENU_PRIORITY_ABOVENORM: return L"Supérieure à la normale";
-    case IDS_MENU_PRIORITY_NORMAL: return L"Normale";
-    case IDS_MENU_PRIORITY_BELOWNORM: return L"Inférieure à la normale";
-    case IDS_MENU_PRIORITY_IDLE: return L"Basse (Idle)";
-    case IDS_MENU_SET_PRIORITY: return L"Définir la priorité";
-    case IDS_MENU_COPY_CMDLINE: return L"Copier la ligne de commande (CLI)";
-    case IDS_MENU_OPEN_LOCATION: return L"Ouvrir l'emplacement du fichier";
-    case IDS_MENU_HIDE_BY_NAME_FMT: return L"Masquer \"%s\" par son nom";
-    case IDS_MENU_MANAGE_EXCLUSIONS: return L"Gérer les processus exclus...";
-    case IDS_MENU_NO_EXCLUSIONS: return L"(Aucun processus exclu par son nom)";
-    case IDS_MENU_RESTORE_HEADER: return L"--- Cliquer pour réafficher ---";
-    case IDS_MENU_RESTORE_ITEM_FMT: return L"Réafficher : %s";
-    case IDS_MENU_CLEAR_EXCLUSIONS: return L"Tout réafficher (effacer les exclusions)";
-    case IDS_TRAY_OPEN: return L"Ouvrir le Task Manager";
-    case IDS_TRAY_EXIT: return L"Quitter définitivement";
-    case IDS_TRAY_CPU_FMT: return L"Historique CPU : %.1f %%";
-    case IDS_TRAY_RAM_FMT: return L"Historique RAM : %.1f %% (%.1f / %.1f Go)";
-    case IDS_TRAY_GPU_FMT: return L"Historique GPU : %.1f %%";
-    case IDS_STATUS_PROCESSES_FMT: return L"Processus : %d / %d";
-    case IDS_STATUS_CPU_FMT: return L"CPU Global : %.1f %%";
-    case IDS_STATUS_RAM_FMT: return L"RAM : %u / %u Mo (%u %%)";
-    case IDS_STATUS_EXCLUSIONS_FMT: return L"Exclusions : %d actives | Tri : %s %s";
+    case IDS_LABEL_FILTER: return bEn ? L"Filter:" : L"Filtrer :";
+    case IDS_BTN_SETTINGS: return bEn ? L"Settings" : L"Paramètres";
+    case IDS_BTN_ABOUT: return bEn ? L"About" : L"À propos";
+    case IDS_MENU_KILL_IMMEDIATE: return bEn ? L"Kill immediately\tDel" : L"Tuer immédiatement\tSuppr";
+    case IDS_MENU_PRIORITY_REALTIME: return bEn ? L"Realtime" : L"Temps réel";
+    case IDS_MENU_PRIORITY_HIGH: return bEn ? L"High" : L"Haute";
+    case IDS_MENU_PRIORITY_ABOVENORM: return bEn ? L"Above normal" : L"Supérieure à la normale";
+    case IDS_MENU_PRIORITY_NORMAL: return bEn ? L"Normal" : L"Normale";
+    case IDS_MENU_PRIORITY_BELOWNORM: return bEn ? L"Below normal" : L"Inférieure à la normale";
+    case IDS_MENU_PRIORITY_IDLE: return bEn ? L"Low (Idle)" : L"Basse (Idle)";
+    case IDS_MENU_SET_PRIORITY: return bEn ? L"Set priority" : L"Définir la priorité";
+    case IDS_MENU_COPY_CMDLINE: return bEn ? L"Copy command line (CLI)" : L"Copier la ligne de commande (CLI)";
+    case IDS_MENU_OPEN_LOCATION: return bEn ? L"Open file location" : L"Ouvrir l'emplacement du fichier";
+    case IDS_MENU_HIDE_BY_NAME_FMT: return bEn ? L"Hide \"%s\" by name" : L"Masquer \"%s\" par son nom";
+    case IDS_MENU_MANAGE_EXCLUSIONS: return bEn ? L"Manage excluded processes..." : L"Gérer les processus exclus...";
+    case IDS_MENU_NO_EXCLUSIONS: return bEn ? L"(No excluded processes)" : L"(Aucun processus exclu par son nom)";
+    case IDS_MENU_RESTORE_HEADER: return bEn ? L"--- Click to restore ---" : L"--- Cliquer pour réafficher ---";
+    case IDS_MENU_RESTORE_ITEM_FMT: return bEn ? L"Restore: %s" : L"Réafficher : %s";
+    case IDS_MENU_CLEAR_EXCLUSIONS: return bEn ? L"Restore all (clear exclusions)" : L"Tout réafficher (effacer les exclusions)";
+    case IDS_TRAY_OPEN: return bEn ? L"Open Task Manager" : L"Ouvrir le Task Manager";
+    case IDS_TRAY_EXIT: return bEn ? L"Exit permanently" : L"Quitter définitivement";
+    case IDS_TRAY_CPU_FMT: return bEn ? L"CPU History: %.1f %%" : L"Historique CPU : %.1f %%";
+    case IDS_TRAY_RAM_FMT: return bEn ? L"RAM History: %.1f %% (%.1f / %.1f GB)" : L"Historique RAM : %.1f %% (%.1f / %.1f Go)";
+    case IDS_TRAY_GPU_FMT: return bEn ? L"GPU History: %.1f %%" : L"Historique GPU : %.1f %%";
+    case IDS_TRAY_TIP_RAM_FMT: return bEn ? L"RAM: %.1f %% (%.1f/%.1fGB)\n1. %.10s: %uMB\n2. %.10s: %uMB\n3. %.10s: %uMB\n4. %.10s: %uMB" : L"RAM : %.1f %% (%.1f/%.1fGo)\n1. %.10s: %uMo\n2. %.10s: %uMo\n3. %.10s: %uMo\n4. %.10s: %uMo";
+    case IDS_STATUS_PROCESSES_FMT: return bEn ? L"Processes: %d / %d" : L"Processus : %d / %d";
+    case IDS_STATUS_CPU_FMT: return bEn ? L"Total CPU: %.1f %%" : L"CPU Global : %.1f %%";
+    case IDS_STATUS_RAM_FMT: return bEn ? L"RAM: %u / %u MB (%u %%)" : L"RAM : %u / %u Mo (%u %%)";
+    case IDS_STATUS_EXCLUSIONS_FMT: return bEn ? L"Exclusions: %d active | Sort: %s %s" : L"Exclusions : %d actives | Tri : %s %s";
     case IDS_GRAPH_CPU_TITLE: return L"CPU";
-    case IDS_GRAPH_CPU_SUB: return L"1 heure • % d'utilisation";
-    case IDS_GRAPH_RAM_TITLE: return L"Mémoire";
-    case IDS_GRAPH_RAM_SUB_FMT: return L"%.1f / %.1f Go (1h)";
-    case IDS_GRAPH_RAM_SUB_DEFAULT: return L"Utilisation mémoire (1h)";
+    case IDS_GRAPH_CPU_SUB: return bEn ? L"1 hour • % utilization" : L"1 heure • % d'utilisation";
+    case IDS_GRAPH_RAM_TITLE: return bEn ? L"Memory" : L"Mémoire";
+    case IDS_GRAPH_RAM_SUB_FMT: return bEn ? L"%.1f / %.1f GB (1h)" : L"%.1f / %.1f Go (1h)";
+    case IDS_GRAPH_RAM_SUB_DEFAULT: return bEn ? L"Memory usage (1h)" : L"Utilisation mémoire (1h)";
     case IDS_GRAPH_GPU_TITLE: return L"GPU";
-    case IDS_GRAPH_GPU_SUB: return L"Moteur 3D • 1 heure";
+    case IDS_GRAPH_GPU_SUB: return bEn ? L"3D Engine • 1 hour" : L"Moteur 3D • 1 heure";
     case IDS_TIP_TIME_MIN_SEC: return L"-%dm %02ds • %.1f %%";
     case IDS_TIP_TIME_SEC: return L"-%ds • %.1f %%";
-    case IDS_TIP_TOP_PROC: return L"Top: %.18s (%u)";
-    case IDS_TIP_USAGE_PCT: return L"Usage: %.1f %%";
-    case IDS_TIP_USAGE_RAM: return L"Mémoire: %u Mo";
-    case IDS_TIP_NO_DATA: return L"Top: -";
-    case IDS_PRIO_REALTIME: return L"Temps réel";
-    case IDS_PRIO_HIGH: return L"Haute";
-    case IDS_PRIO_ABOVENORM: return L"Supérieure";
-    case IDS_PRIO_NORMAL: return L"Normale";
-    case IDS_PRIO_BELOWNORM: return L"Inférieure";
-    case IDS_PRIO_IDLE: return L"Basse";
-    case IDS_PRIO_UNKNOWN: return L"Inconnue";
-    case IDS_STR_RESTRICTED: return L"[Système / Accès restreint]";
-    case IDS_STR_RESTRICTED_ACCESS: return L"[Accès restreint]";
-    case IDS_STR_NO_NTAPI: return L"[Non disponible - NTAPI absente]";
+    case IDS_TIP_TOP_PROC: return bEn ? L"Top: %.18s (%u)" : L"Top : %.18s (%u)";
+    case IDS_TIP_USAGE_PCT: return bEn ? L"Usage: %.1f %%" : L"Utilisation : %.1f %%";
+    case IDS_TIP_USAGE_RAM: return bEn ? L"Memory: %u MB" : L"Mémoire : %u Mo";
+    case IDS_TIP_NO_DATA: return bEn ? L"No activity" : L"Aucune activité";
+    case IDS_PRIO_REALTIME: return bEn ? L"Realtime" : L"Temps réel";
+    case IDS_PRIO_HIGH: return bEn ? L"High" : L"Haute";
+    case IDS_PRIO_ABOVENORM: return bEn ? L"Above normal" : L"Supérieure";
+    case IDS_PRIO_NORMAL: return bEn ? L"Normal" : L"Normale";
+    case IDS_PRIO_BELOWNORM: return bEn ? L"Below normal" : L"Inférieure";
+    case IDS_PRIO_IDLE: return bEn ? L"Low" : L"Basse";
+    case IDS_PRIO_UNKNOWN: return bEn ? L"Unknown" : L"Inconnue";
+    case IDS_STR_RESTRICTED: return bEn ? L"[System / Restricted access]" : L"[Système / Accès restreint]";
+    case IDS_STR_RESTRICTED_ACCESS: return bEn ? L"[Restricted access]" : L"[Accès restreint]";
+    case IDS_STR_NO_NTAPI: return bEn ? L"[Unavailable - NTAPI missing]" : L"[Non disponible - NTAPI absente]";
+    case IDS_UNIT_RAM_FMT: return bEn ? L"%u MB" : L"%u Mo";
+    case IDS_UNIT_DISK_FMT: return bEn ? L"%.2f MB/s" : L"%.2f Mo/s";
+    case IDS_UNIT_NET_FMT: return bEn ? L"%.1f KB/s" : L"%.1f Ko/s";
+    case IDS_SETTINGS_TITLE: return bEn ? L"Settings" : L"Paramètres";
+    case IDS_SETTINGS_LANG_LABEL: return bEn ? L"Interface language:" : L"Langue de l'interface :";
+    case IDS_SETTINGS_LANG_AUTO: return bEn ? L"System (Auto - English fallback)" : L"Système (Auto - Anglais par défaut)";
+    case IDS_SETTINGS_LANG_EN: return L"English";
+    case IDS_SETTINGS_LANG_FR: return L"Français";
+    case IDS_SETTINGS_AUTOREFRESH: return bEn ? L"Auto-refresh (1 second)" : L"Rafraîchissement automatique (1 seconde)";
+    case IDS_SETTINGS_HIDE_WINDOWS: return bEn ? L"Hide core Windows processes" : L"Masquer les processus Windows de base";
+    case IDS_SETTINGS_ACTIVE_LANG_FMT: return bEn ? L"Active language: %s" : L"Langue active : %s";
+    case IDS_BTN_OK: return L"OK";
+    case IDS_BTN_CANCEL: return bEn ? L"Cancel" : L"Annuler";
+    case IDS_ABOUT_TITLE: return bEn ? L"About" : L"À propos";
+    case IDS_ABOUT_APP_NAME: return bEn ? L"Windows Task Manager" : L"Gestionnaire des tâches Windows";
+    case IDS_ABOUT_VERSION_FMT: return L"Version %s (Build %d)";
+    case IDS_ABOUT_COMPILE_FMT: return bEn ? L"Built on %s at %s" : L"Compilé le %s à %s";
+    case IDS_ABOUT_TECH: return bEn ? L"Native Win32 API / NTAPI in pure C (MinGW-w64)" : L"Win32 API / NTAPI natif en C pur (MinGW-w64)";
+    case IDS_ABOUT_DESC: return bEn ? L"Flicker-free real-time process monitor with 1-hour history, dynamic tray icons, adaptive dark mode, and exclusion management." : L"Moniteur de processus temps réel sans scintillement avec historique 1h, icônes dynamiques dans la barre des tâches, mode sombre adaptatif et gestion des exclusions.";
+    case IDS_BTN_CLOSE: return bEn ? L"Close" : L"Fermer";
     default: return L"";
     }
 }
@@ -430,6 +493,16 @@ void LoadSettings(void) {
     g_bAutoRefresh = (GetPrivateProfileIntW(L"Settings", L"AutoRefresh", 1, szIniPath) != 0);
     g_bHideWindowsProcesses = (GetPrivateProfileIntW(L"Settings", L"HideWindowsProcesses", 0, szIniPath) != 0);
 
+    WCHAR szLang[32] = { 0 };
+    GetPrivateProfileStringW(L"Settings", L"Language", L"auto", szLang, 32, szIniPath);
+    if (_wcsicmp(szLang, L"fr") == 0) {
+        g_nLanguageSetting = APP_LANG_FR;
+    } else if (_wcsicmp(szLang, L"en") == 0) {
+        g_nLanguageSetting = APP_LANG_EN;
+    } else {
+        g_nLanguageSetting = APP_LANG_AUTO;
+    }
+
     int savedSortCol = GetPrivateProfileIntW(L"Settings", L"SortColumn", COL_CPU, szIniPath);
     if (savedSortCol >= 0 && savedSortCol < COL_COUNT) {
         g_SortColumn = savedSortCol;
@@ -454,6 +527,11 @@ void SaveSettings(void) {
 
     WritePrivateProfileStringW(L"Settings", L"AutoRefresh", g_bAutoRefresh ? L"1" : L"0", szIniPath);
     WritePrivateProfileStringW(L"Settings", L"HideWindowsProcesses", g_bHideWindowsProcesses ? L"1" : L"0", szIniPath);
+
+    const WCHAR* szLangVal = L"auto";
+    if (g_nLanguageSetting == APP_LANG_FR) szLangVal = L"fr";
+    else if (g_nLanguageSetting == APP_LANG_EN) szLangVal = L"en";
+    WritePrivateProfileStringW(L"Settings", L"Language", szLangVal, szIniPath);
 
     WCHAR szBuf[32];
     wsprintfW(szBuf, L"%d", g_SortColumn);
@@ -916,7 +994,7 @@ static void SyncTrayIconsInternal(BOOL bUpdateHistory, double cpuPct, double mem
         nid.hIcon = hNewRam;
 
         swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
-            L"RAM : %.1f %% (%.1f/%.1fGo)\n1. %.10s: %uMo\n2. %.10s: %uMo\n3. %.10s: %uMo\n4. %.10s: %uMo",
+            GetResString(IDS_TRAY_TIP_RAM_FMT),
             g_LastMemPct, g_LastUsedRamGb, g_LastTotalRamGb,
             topRam[0].szName[0] ? topRam[0].szName : L"-", (UINT)(topRam[0].value > 0.0 ? topRam[0].value : 0.0),
             topRam[1].szName[0] ? topRam[1].szName : L"-", (UINT)(topRam[1].value > 0.0 ? topRam[1].value : 0.0),
@@ -2027,7 +2105,10 @@ static void ApplyModernWindowsTheme(HWND hWnd, HWND hListView) {
         if (g_hBtnAutoRefresh) g_pfnAllowDarkModeForWindow(g_hBtnAutoRefresh, g_bDarkModeActive);
         if (g_hBtnHideWindows) g_pfnAllowDarkModeForWindow(g_hBtnHideWindows, g_bDarkModeActive);
         if (g_hBtnExclusions) g_pfnAllowDarkModeForWindow(g_hBtnExclusions, g_bDarkModeActive);
+        if (g_hStaticSearch) g_pfnAllowDarkModeForWindow(g_hStaticSearch, g_bDarkModeActive);
         if (g_hEditSearch) g_pfnAllowDarkModeForWindow(g_hEditSearch, g_bDarkModeActive);
+        if (g_hBtnSettings) g_pfnAllowDarkModeForWindow(g_hBtnSettings, g_bDarkModeActive);
+        if (g_hBtnAbout) g_pfnAllowDarkModeForWindow(g_hBtnAbout, g_bDarkModeActive);
         if (g_hGraphBanner) g_pfnAllowDarkModeForWindow(g_hGraphBanner, g_bDarkModeActive);
     }
 
@@ -2078,6 +2159,598 @@ static void ApplyModernWindowsTheme(HWND hWnd, HWND hListView) {
     }
 
     ApplyDwmModernAttributes(hWnd);
+}
+
+// ============================================================================
+// Mise à jour en direct de la langue dans toute l'interface
+// ============================================================================
+void ApplyLanguageToUI(HWND hWnd) {
+    if (!hWnd) return;
+
+    SetWindowTextW(hWnd, GetResString(IDS_APP_TITLE));
+
+    if (g_hBtnAutoRefresh) {
+        SetWindowTextW(g_hBtnAutoRefresh, g_bAutoRefresh ? GetResString(IDS_BTN_AUTOREFRESH_ON) : GetResString(IDS_BTN_AUTOREFRESH_OFF));
+    }
+    if (g_hBtnRefresh) {
+        SetWindowTextW(g_hBtnRefresh, GetResString(IDS_BTN_REFRESH));
+    }
+    if (g_hBtnHideWindows) {
+        SetWindowTextW(g_hBtnHideWindows, g_bHideWindowsProcesses ? GetResString(IDS_BTN_WINDOWS_OFF) : GetResString(IDS_BTN_WINDOWS_ON));
+    }
+    UpdateExclusionsButtonText();
+    if (g_hStaticSearch) {
+        SetWindowTextW(g_hStaticSearch, GetResString(IDS_LABEL_FILTER));
+    }
+    if (g_hBtnSettings) {
+        SetWindowTextW(g_hBtnSettings, GetResString(IDS_BTN_SETTINGS));
+    }
+    if (g_hBtnAbout) {
+        SetWindowTextW(g_hBtnAbout, GetResString(IDS_BTN_ABOUT));
+    }
+
+    UpdateHeaderSortArrow();
+    if (g_hGraphBanner && IsWindow(g_hGraphBanner)) {
+        InvalidateRect(g_hGraphBanner, NULL, FALSE);
+    }
+    RefreshProcessList();
+    RedrawWindow(hWnd, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+}
+
+// Utilitaire de positionnement des boutons alignés à droite dans la barre d'outils
+static void LayoutToolbarRightButtons(int clientWidth) {
+    int rightMargin = 10;
+    int aboutW = 95;
+    int settingsW = 105;
+    int gap = 6;
+
+    int aboutX = clientWidth - rightMargin - aboutW;
+    int settingsX = aboutX - gap - settingsW;
+    if (settingsX < 825) {
+        settingsX = 825;
+        aboutX = settingsX + settingsW + gap;
+    }
+
+    if (g_hBtnSettings) {
+        MoveWindow(g_hBtnSettings, settingsX, 10, settingsW, 28, TRUE);
+    }
+    if (g_hBtnAbout) {
+        MoveWindow(g_hBtnAbout, aboutX, 10, aboutW, 28, TRUE);
+    }
+}
+
+// ============================================================================
+// Fenêtre modale Paramètres (Langue, Auto-refresh, Processus Windows)
+// ============================================================================
+typedef struct {
+    HWND hParent;
+    HWND hComboLang;
+    HWND hLblActiveLang;
+    HWND hChkAuto;
+    HWND hChkHideWin;
+    HWND hBtnOk;
+    HWND hBtnCancel;
+    BOOL bDone;
+} SettingsDlgState;
+
+static void UpdateActiveLangPreviewLabel(SettingsDlgState *pState) {
+    if (!pState || !pState->hComboLang || !pState->hLblActiveLang) return;
+    int sel = (int)SendMessageW(pState->hComboLang, CB_GETCURSEL, 0, 0);
+    int resolved = APP_LANG_EN;
+    if (sel == APP_LANG_FR) {
+        resolved = APP_LANG_FR;
+    } else if (sel == APP_LANG_EN) {
+        resolved = APP_LANG_EN;
+    } else {
+        LANGID langId = GetUserDefaultUILanguage();
+        resolved = (PRIMARYLANGID(langId) == LANG_FRENCH) ? APP_LANG_FR : APP_LANG_EN;
+    }
+
+    const WCHAR *szLangName = (resolved == APP_LANG_FR) ? GetResString(IDS_SETTINGS_LANG_FR) : GetResString(IDS_SETTINGS_LANG_EN);
+    WCHAR szBuf[128];
+    swprintf_s(szBuf, sizeof(szBuf) / sizeof(WCHAR), GetResString(IDS_SETTINGS_ACTIVE_LANG_FMT), szLangName);
+    SetWindowTextW(pState->hLblActiveLang, szBuf);
+}
+
+static LRESULT CALLBACK SettingsWndProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    SettingsDlgState *pState = (SettingsDlgState*)GetWindowLongPtrW(hDlg, GWLP_USERDATA);
+
+    switch (message) {
+    case WM_CREATE: {
+        CREATESTRUCTW *pCs = (CREATESTRUCTW*)lParam;
+        pState = (SettingsDlgState*)pCs->lpCreateParams;
+        SetWindowLongPtrW(hDlg, GWLP_USERDATA, (LONG_PTR)pState);
+
+        HINSTANCE hInst = GetModuleHandleW(NULL);
+        HFONT hFont = g_hFont ? g_hFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+
+        ApplyDwmModernAttributes(hDlg);
+        if (g_pfnAllowDarkModeForWindow) {
+            g_pfnAllowDarkModeForWindow(hDlg, g_bDarkModeActive);
+        }
+
+        // Label Langue
+        HWND hLblLang = CreateWindowExW(
+            0, L"STATIC", GetResString(IDS_SETTINGS_LANG_LABEL),
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            20, 20, 360, 20,
+            hDlg, NULL, hInst, NULL
+        );
+        SendMessageW(hLblLang, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        // Liste déroulante Langue
+        pState->hComboLang = CreateWindowExW(
+            0, L"COMBOBOX", L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            20, 44, 360, 120,
+            hDlg, (HMENU)IDC_SET_COMBO_LANG, hInst, NULL
+        );
+        SendMessageW(pState->hComboLang, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(pState->hComboLang, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_LANG_AUTO));
+        SendMessageW(pState->hComboLang, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_LANG_EN));
+        SendMessageW(pState->hComboLang, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_LANG_FR));
+        SendMessageW(pState->hComboLang, CB_SETCURSEL, (WPARAM)g_nLanguageSetting, 0);
+
+        // Indication de la langue active résolue
+        pState->hLblActiveLang = CreateWindowExW(
+            0, L"STATIC", L"",
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            20, 74, 360, 18,
+            hDlg, (HMENU)IDC_SET_ACTIVE_LANG, hInst, NULL
+        );
+        SendMessageW(pState->hLblActiveLang, WM_SETFONT, (WPARAM)(g_hFontSmall ? g_hFontSmall : hFont), TRUE);
+        UpdateActiveLangPreviewLabel(pState);
+
+        // Case à cocher Auto-refresh
+        pState->hChkAuto = CreateWindowExW(
+            0, L"BUTTON", GetResString(IDS_SETTINGS_AUTOREFRESH),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+            20, 108, 360, 24,
+            hDlg, (HMENU)IDC_SET_CHK_AUTO, hInst, NULL
+        );
+        SendMessageW(pState->hChkAuto, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(pState->hChkAuto, BM_SETCHECK, g_bAutoRefresh ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        // Case à cocher Masquer les processus Windows
+        pState->hChkHideWin = CreateWindowExW(
+            0, L"BUTTON", GetResString(IDS_SETTINGS_HIDE_WINDOWS),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
+            20, 138, 360, 24,
+            hDlg, (HMENU)IDC_SET_CHK_HIDEWIN, hInst, NULL
+        );
+        SendMessageW(pState->hChkHideWin, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(pState->hChkHideWin, BM_SETCHECK, g_bHideWindowsProcesses ? BST_CHECKED : BST_UNCHECKED, 0);
+
+        // Boutons OK / Annuler
+        pState->hBtnOk = CreateWindowExW(
+            0, L"BUTTON", GetResString(IDS_BTN_OK),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            190, 182, 92, 28,
+            hDlg, (HMENU)IDOK, hInst, NULL
+        );
+        SendMessageW(pState->hBtnOk, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        pState->hBtnCancel = CreateWindowExW(
+            0, L"BUTTON", GetResString(IDS_BTN_CANCEL),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+            288, 182, 92, 28,
+            hDlg, (HMENU)IDCANCEL, hInst, NULL
+        );
+        SendMessageW(pState->hBtnCancel, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        // Adaptation UxTheme sombre pour les contrôles du dialogue
+        HMODULE hUxTheme = LoadLibraryW(L"uxtheme.dll");
+        if (hUxTheme) {
+            typedef HRESULT (WINAPI *pfnSetWindowTheme)(HWND, LPCWSTR, LPCWSTR);
+            pfnSetWindowTheme pSetWindowTheme = (pfnSetWindowTheme)(void*)GetProcAddress(hUxTheme, "SetWindowTheme");
+            if (pSetWindowTheme) {
+                pSetWindowTheme(pState->hComboLang, g_bDarkModeActive ? L"DarkMode_CFD" : L"Explorer", NULL);
+                if (g_bDarkModeActive) {
+                    // Permet au texte des cases à cocher de respecter WM_CTLCOLORSTATIC en mode sombre
+                    pSetWindowTheme(pState->hChkAuto, L"", L"");
+                    pSetWindowTheme(pState->hChkHideWin, L"", L"");
+                }
+            }
+            FreeLibrary(hUxTheme);
+        }
+
+        SetWindowSubclass(pState->hBtnOk, ButtonSubclassProc, 101, 0);
+        SetWindowSubclass(pState->hBtnCancel, ButtonSubclassProc, 102, 0);
+        return 0;
+    }
+
+    case WM_COMMAND: {
+        WORD id = LOWORD(wParam);
+        WORD code = HIWORD(wParam);
+
+        if (id == IDC_SET_COMBO_LANG && code == CBN_SELCHANGE) {
+            UpdateActiveLangPreviewLabel(pState);
+            return 0;
+        }
+        if (id == IDOK) {
+            if (pState) {
+                int selLang = (int)SendMessageW(pState->hComboLang, CB_GETCURSEL, 0, 0);
+                if (selLang >= APP_LANG_AUTO && selLang <= APP_LANG_FR) {
+                    g_nLanguageSetting = selLang;
+                }
+
+                BOOL newAuto = (SendMessageW(pState->hChkAuto, BM_GETCHECK, 0, 0) == BST_CHECKED);
+                if (newAuto != g_bAutoRefresh) {
+                    g_bAutoRefresh = newAuto;
+                    if (g_bAutoRefresh) {
+                        SetTimer(pState->hParent, IDT_REFRESH_TIMER, REFRESH_INTERVAL_MS, NULL);
+                    } else {
+                        KillTimer(pState->hParent, IDT_REFRESH_TIMER);
+                    }
+                }
+
+                g_bHideWindowsProcesses = (SendMessageW(pState->hChkHideWin, BM_GETCHECK, 0, 0) == BST_CHECKED);
+
+                SaveSettings();
+                ApplyLanguageToUI(pState->hParent);
+                EnableWindow(pState->hParent, TRUE);
+                pState->bDone = TRUE;
+            }
+            DestroyWindow(hDlg);
+            return 0;
+        }
+        if (id == IDCANCEL) {
+            if (pState) {
+                EnableWindow(pState->hParent, TRUE);
+                pState->bDone = TRUE;
+            }
+            DestroyWindow(hDlg);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_CLOSE:
+        if (pState) {
+            EnableWindow(pState->hParent, TRUE);
+            pState->bDone = TRUE;
+        }
+        DestroyWindow(hDlg);
+        return 0;
+
+    case WM_ERASEBKGND: {
+        HDC hdc = (HDC)wParam;
+        RECT rc;
+        GetClientRect(hDlg, &rc);
+        FillRect(hdc, &rc, g_bDarkModeActive ? g_hDarkWndBrush : GetSysColorBrush(COLOR_BTNFACE));
+        return 1;
+    }
+
+    case WM_CTLCOLORSTATIC:
+    case WM_CTLCOLORBTN: {
+        HDC hdcCtrl = (HDC)wParam;
+        HWND hCtrl = (HWND)lParam;
+        SetBkMode(hdcCtrl, TRANSPARENT);
+        if (g_bDarkModeActive) {
+            if (pState && hCtrl == pState->hLblActiveLang) {
+                SetTextColor(hdcCtrl, RGB(148, 163, 184));
+            } else {
+                SetTextColor(hdcCtrl, RGB(224, 228, 238));
+            }
+            return (LRESULT)g_hDarkWndBrush;
+        } else {
+            if (pState && hCtrl == pState->hLblActiveLang) {
+                SetTextColor(hdcCtrl, RGB(90, 100, 115));
+            } else {
+                SetTextColor(hdcCtrl, GetSysColor(COLOR_WINDOWTEXT));
+            }
+            return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+    }
+
+    case WM_CTLCOLOREDIT:
+    case WM_CTLCOLORLISTBOX: {
+        HDC hdcList = (HDC)wParam;
+        if (g_bDarkModeActive) {
+            SetTextColor(hdcList, RGB(242, 244, 248));
+            SetBkColor(hdcList, RGB(42, 44, 52));
+            return (LRESULT)g_hDarkEditBrush;
+        }
+        break;
+    }
+
+    case WM_DESTROY:
+        if (pState) {
+            if (pState->hBtnOk) RemoveWindowSubclass(pState->hBtnOk, ButtonSubclassProc, 101);
+            if (pState->hBtnCancel) RemoveWindowSubclass(pState->hBtnCancel, ButtonSubclassProc, 102);
+            pState->bDone = TRUE;
+        }
+        return 0;
+    }
+
+    return DefWindowProcW(hDlg, message, wParam, lParam);
+}
+
+void ShowSettingsDialog(HWND hParent) {
+    HINSTANCE hInst = GetModuleHandleW(NULL);
+    const WCHAR DLG_CLASS[] = L"TaskMgrSettingsDialog";
+
+    WNDCLASSEXW wc = { 0 };
+    if (!GetClassInfoExW(hInst, DLG_CLASS, &wc)) {
+        wc.cbSize = sizeof(WNDCLASSEXW);
+        wc.lpfnWndProc = SettingsWndProc;
+        wc.hInstance = hInst;
+        wc.hIcon = g_hAppIcon;
+        wc.hIconSm = g_hAppIconSm;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = g_bDarkModeActive ? g_hDarkWndBrush : (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = DLG_CLASS;
+        RegisterClassExW(&wc);
+    }
+
+    SettingsDlgState state;
+    memset(&state, 0, sizeof(state));
+    state.hParent = hParent;
+
+    int dlgW = 416;
+    int dlgH = 262;
+    RECT rcParent;
+    GetWindowRect(hParent, &rcParent);
+    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
+    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
+
+    EnableWindow(hParent, FALSE);
+
+    HWND hDlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        DLG_CLASS,
+        GetResString(IDS_SETTINGS_TITLE),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        x, y, dlgW, dlgH,
+        hParent, NULL, hInst, &state
+    );
+
+    if (!hDlg) {
+        EnableWindow(hParent, TRUE);
+        return;
+    }
+
+    ShowWindow(hDlg, SW_SHOW);
+    UpdateWindow(hDlg);
+    if (state.hComboLang) SetFocus(state.hComboLang);
+
+    MSG msg;
+    while (!state.bDone && GetMessage(&msg, NULL, 0, 0)) {
+        if (!IsWindow(hDlg)) break;
+        if (!IsDialogMessageW(hDlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    }
+
+    EnableWindow(hParent, TRUE);
+    SetForegroundWindow(hParent);
+}
+
+// ============================================================================
+// Fenêtre modale À propos (Version, Build, Date de compilation)
+// ============================================================================
+typedef struct {
+    HWND hParent;
+    HWND hLblSub;
+    HWND hBtnClose;
+    BOOL bDone;
+} AboutDlgState;
+
+static LRESULT CALLBACK AboutWndProc(HWND hDlg, UINT message, WPARAM wParam, LPARAM lParam) {
+    AboutDlgState *pState = (AboutDlgState*)GetWindowLongPtrW(hDlg, GWLP_USERDATA);
+
+    switch (message) {
+    case WM_CREATE: {
+        CREATESTRUCTW *pCs = (CREATESTRUCTW*)lParam;
+        pState = (AboutDlgState*)pCs->lpCreateParams;
+        SetWindowLongPtrW(hDlg, GWLP_USERDATA, (LONG_PTR)pState);
+
+        HINSTANCE hInst = GetModuleHandleW(NULL);
+        HFONT hFont = g_hFont ? g_hFont : (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+        HFONT hFontBold = g_hFontBold ? g_hFontBold : hFont;
+        HFONT hFontSmall = g_hFontSmall ? g_hFontSmall : hFont;
+
+        ApplyDwmModernAttributes(hDlg);
+        if (g_pfnAllowDarkModeForWindow) {
+            g_pfnAllowDarkModeForWindow(hDlg, g_bDarkModeActive);
+        }
+
+        // Icône applicative
+        HWND hIconCtrl = CreateWindowExW(
+            0, L"STATIC", NULL,
+            WS_CHILD | WS_VISIBLE | SS_ICON | SS_CENTERIMAGE,
+            20, 20, 48, 48,
+            hDlg, NULL, hInst, NULL
+        );
+        if (g_hAppIcon) {
+            SendMessageW(hIconCtrl, STM_SETICON, (WPARAM)g_hAppIcon, 0);
+        }
+
+        // Nom de l'application
+        HWND hLblTitle = CreateWindowExW(
+            0, L"STATIC", GetResString(IDS_ABOUT_APP_NAME),
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            82, 20, 340, 22,
+            hDlg, NULL, hInst, NULL
+        );
+        SendMessageW(hLblTitle, WM_SETFONT, (WPARAM)hFontBold, TRUE);
+
+        // Version + numéro de build
+        WCHAR szVerText[128];
+        swprintf_s(szVerText, sizeof(szVerText) / sizeof(WCHAR), GetResString(IDS_ABOUT_VERSION_FMT), APP_VERSION_FULL_W, APP_VER_BUILD);
+        HWND hLblVer = CreateWindowExW(
+            0, L"STATIC", szVerText,
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            82, 44, 340, 18,
+            hDlg, NULL, hInst, NULL
+        );
+        SendMessageW(hLblVer, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        // Date et heure de compilation
+        WCHAR szDateW[64] = { 0 };
+        WCHAR szTimeW[64] = { 0 };
+        MultiByteToWideChar(CP_ACP, 0, __DATE__, -1, szDateW, 64);
+        MultiByteToWideChar(CP_ACP, 0, __TIME__, -1, szTimeW, 64);
+
+        WCHAR szCompileText[160];
+        swprintf_s(szCompileText, sizeof(szCompileText) / sizeof(WCHAR), GetResString(IDS_ABOUT_COMPILE_FMT), szDateW, szTimeW);
+        pState->hLblSub = CreateWindowExW(
+            0, L"STATIC", szCompileText,
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            82, 64, 340, 18,
+            hDlg, NULL, hInst, NULL
+        );
+        SendMessageW(pState->hLblSub, WM_SETFONT, (WPARAM)hFontSmall, TRUE);
+
+        // Plateforme / stack technique
+        HWND hLblTech = CreateWindowExW(
+            0, L"STATIC", GetResString(IDS_ABOUT_TECH),
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            20, 98, 404, 20,
+            hDlg, NULL, hInst, NULL
+        );
+        SendMessageW(hLblTech, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        // Description
+        HWND hLblDesc = CreateWindowExW(
+            0, L"STATIC", GetResString(IDS_ABOUT_DESC),
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            20, 124, 404, 58,
+            hDlg, NULL, hInst, NULL
+        );
+        SendMessageW(hLblDesc, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        // Bouton Fermer
+        pState->hBtnClose = CreateWindowExW(
+            0, L"BUTTON", GetResString(IDS_BTN_CLOSE),
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+            324, 198, 100, 28,
+            hDlg, (HMENU)IDOK, hInst, NULL
+        );
+        SendMessageW(pState->hBtnClose, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SetWindowSubclass(pState->hBtnClose, ButtonSubclassProc, 103, 0);
+        return 0;
+    }
+
+    case WM_COMMAND:
+        if (LOWORD(wParam) == IDOK || LOWORD(wParam) == IDCANCEL) {
+            if (pState) {
+                EnableWindow(pState->hParent, TRUE);
+                pState->bDone = TRUE;
+            }
+            DestroyWindow(hDlg);
+            return 0;
+        }
+        break;
+
+    case WM_CLOSE:
+        if (pState) {
+            EnableWindow(pState->hParent, TRUE);
+            pState->bDone = TRUE;
+        }
+        DestroyWindow(hDlg);
+        return 0;
+
+    case WM_ERASEBKGND: {
+        HDC hdc = (HDC)wParam;
+        RECT rc;
+        GetClientRect(hDlg, &rc);
+        FillRect(hdc, &rc, g_bDarkModeActive ? g_hDarkWndBrush : GetSysColorBrush(COLOR_BTNFACE));
+        return 1;
+    }
+
+    case WM_CTLCOLORSTATIC: {
+        HDC hdcCtrl = (HDC)wParam;
+        HWND hCtrl = (HWND)lParam;
+        SetBkMode(hdcCtrl, TRANSPARENT);
+        if (g_bDarkModeActive) {
+            if (pState && hCtrl == pState->hLblSub) {
+                SetTextColor(hdcCtrl, RGB(148, 163, 184));
+            } else {
+                SetTextColor(hdcCtrl, RGB(226, 230, 240));
+            }
+            return (LRESULT)g_hDarkWndBrush;
+        } else {
+            if (pState && hCtrl == pState->hLblSub) {
+                SetTextColor(hdcCtrl, RGB(90, 100, 115));
+            } else {
+                SetTextColor(hdcCtrl, GetSysColor(COLOR_WINDOWTEXT));
+            }
+            return (LRESULT)GetSysColorBrush(COLOR_BTNFACE);
+        }
+    }
+
+    case WM_DESTROY:
+        if (pState) {
+            if (pState->hBtnClose) RemoveWindowSubclass(pState->hBtnClose, ButtonSubclassProc, 103);
+            pState->bDone = TRUE;
+        }
+        return 0;
+    }
+
+    return DefWindowProcW(hDlg, message, wParam, lParam);
+}
+
+void ShowAboutDialog(HWND hParent) {
+    HINSTANCE hInst = GetModuleHandleW(NULL);
+    const WCHAR DLG_CLASS[] = L"TaskMgrAboutDialog";
+
+    WNDCLASSEXW wc = { 0 };
+    if (!GetClassInfoExW(hInst, DLG_CLASS, &wc)) {
+        wc.cbSize = sizeof(WNDCLASSEXW);
+        wc.lpfnWndProc = AboutWndProc;
+        wc.hInstance = hInst;
+        wc.hIcon = g_hAppIcon;
+        wc.hIconSm = g_hAppIconSm;
+        wc.hCursor = LoadCursor(NULL, IDC_ARROW);
+        wc.hbrBackground = g_bDarkModeActive ? g_hDarkWndBrush : (HBRUSH)(COLOR_BTNFACE + 1);
+        wc.lpszClassName = DLG_CLASS;
+        RegisterClassExW(&wc);
+    }
+
+    AboutDlgState state;
+    memset(&state, 0, sizeof(state));
+    state.hParent = hParent;
+
+    int dlgW = 458;
+    int dlgH = 278;
+    RECT rcParent;
+    GetWindowRect(hParent, &rcParent);
+    int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
+    int y = rcParent.top + ((rcParent.bottom - rcParent.top) - dlgH) / 2;
+
+    EnableWindow(hParent, FALSE);
+
+    HWND hDlg = CreateWindowExW(
+        WS_EX_DLGMODALFRAME,
+        DLG_CLASS,
+        GetResString(IDS_ABOUT_TITLE),
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU,
+        x, y, dlgW, dlgH,
+        hParent, NULL, hInst, &state
+    );
+
+    if (!hDlg) {
+        EnableWindow(hParent, TRUE);
+        return;
+    }
+
+    ShowWindow(hDlg, SW_SHOW);
+    UpdateWindow(hDlg);
+    if (state.hBtnClose) SetFocus(state.hBtnClose);
+
+    MSG msg;
+    while (!state.bDone && GetMessage(&msg, NULL, 0, 0)) {
+        if (!IsWindow(hDlg)) break;
+        if (!IsDialogMessageW(hDlg, &msg)) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
+    }
+
+    EnableWindow(hParent, TRUE);
+    SetForegroundWindow(hParent);
 }
 
 // Point d'entrée WinMain
@@ -2310,13 +2983,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         SendMessage(g_hBtnExclusions, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         // 5. Recherche / Filtre
-        HWND hStatic = CreateWindowExW(
+        g_hStaticSearch = CreateWindowExW(
             0, L"STATIC", GetResString(IDS_LABEL_FILTER),
             WS_CHILD | WS_VISIBLE | SS_RIGHT,
             575, 14, 55, 20,
             hWnd, (HMENU)IDC_STATIC_SEARCH, GetModuleHandle(NULL), NULL
         );
-        SendMessage(hStatic, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessage(g_hStaticSearch, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         g_hEditSearch = CreateWindowExW(
             WS_EX_CLIENTEDGE, L"EDIT", L"",
@@ -2325,6 +2998,23 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             hWnd, (HMENU)IDC_EDIT_SEARCH, GetModuleHandle(NULL), NULL
         );
         SendMessage(g_hEditSearch, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        // Boutons Paramètres et À propos alignés à droite de la barre d'outils
+        g_hBtnSettings = CreateWindowExW(
+            0, L"BUTTON", GetResString(IDS_BTN_SETTINGS),
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            1025, 10, 105, 28,
+            hWnd, (HMENU)IDC_BTN_SETTINGS, GetModuleHandle(NULL), NULL
+        );
+        SendMessage(g_hBtnSettings, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        g_hBtnAbout = CreateWindowExW(
+            0, L"BUTTON", GetResString(IDS_BTN_ABOUT),
+            WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+            1136, 10, 95, 28,
+            hWnd, (HMENU)IDC_BTN_ABOUT, GetModuleHandle(NULL), NULL
+        );
+        SendMessage(g_hBtnAbout, WM_SETFONT, (WPARAM)hFont, TRUE);
 
         // 6. Bandeau graphique des performances (CPU, Mémoire RAM, GPU) au-dessus des processus
         g_hGraphBanner = CreateWindowExW(
@@ -2378,6 +3068,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         SetWindowSubclass(g_hBtnRefresh, ButtonSubclassProc, 11, 0);
         SetWindowSubclass(g_hBtnHideWindows, ButtonSubclassProc, 13, 0);
         SetWindowSubclass(g_hBtnExclusions, ButtonSubclassProc, 14, 0);
+        SetWindowSubclass(g_hBtnSettings, ButtonSubclassProc, 15, 0);
+        SetWindowSubclass(g_hBtnAbout, ButtonSubclassProc, 16, 0);
 
         // Subclass de la barre d'état pour adoucir la luminosité et supprimer les bordures blanches 3D
         SetWindowSubclass(g_hStatusBar, StatusBarSubclassProc, 20, 0);
@@ -2391,6 +3083,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     case WM_SIZE: {
         int width = LOWORD(lParam);
         int height = HIWORD(lParam);
+
+        LayoutToolbarRightButtons(width);
 
         SendMessage(g_hStatusBar, WM_SIZE, 0, 0);
         RECT rcStatus;
@@ -2496,6 +3190,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             }
             SaveSettings();
             RefreshProcessList();
+            break;
+
+        case IDC_BTN_SETTINGS:
+            ShowSettingsDialog(hWnd);
+            break;
+
+        case IDC_BTN_ABOUT:
+            ShowAboutDialog(hWnd);
             break;
 
         case IDC_BTN_EXCLUSIONS:
@@ -2810,6 +3512,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         if (g_hBtnRefresh)     RemoveWindowSubclass(g_hBtnRefresh, ButtonSubclassProc, 11);
         if (g_hBtnHideWindows) RemoveWindowSubclass(g_hBtnHideWindows, ButtonSubclassProc, 13);
         if (g_hBtnExclusions)  RemoveWindowSubclass(g_hBtnExclusions, ButtonSubclassProc, 14);
+        if (g_hBtnSettings)    RemoveWindowSubclass(g_hBtnSettings, ButtonSubclassProc, 15);
+        if (g_hBtnAbout)       RemoveWindowSubclass(g_hBtnAbout, ButtonSubclassProc, 16);
         if (g_hStatusBar)      RemoveWindowSubclass(g_hStatusBar, StatusBarSubclassProc, 20);
         if (g_hGraphBanner)    RemoveWindowSubclass(g_hGraphBanner, GraphBannerSubclassProc, 30);
 
@@ -3373,9 +4077,9 @@ void RefreshProcessList(void) {
         WCHAR szPid[32], szCpu[32], szRam[32], szDisk[32], szNet[32], szGpu[32];
         wsprintfW(szPid, L"%u", p->pid);
         swprintf_s(szCpu, sizeof(szCpu)/sizeof(WCHAR), L"%.1f %%", p->cpuPercent);
-        wsprintfW(szRam, L"%u Mo", (UINT)p->workingSetMB);
-        swprintf_s(szDisk, sizeof(szDisk)/sizeof(WCHAR), L"%.2f Mo/s", p->diskMBPerSec);
-        swprintf_s(szNet, sizeof(szNet)/sizeof(WCHAR), L"%.1f Ko/s", p->netKBPerSec);
+        wsprintfW(szRam, GetResString(IDS_UNIT_RAM_FMT), (UINT)p->workingSetMB);
+        swprintf_s(szDisk, sizeof(szDisk)/sizeof(WCHAR), GetResString(IDS_UNIT_DISK_FMT), p->diskMBPerSec);
+        swprintf_s(szNet, sizeof(szNet)/sizeof(WCHAR), GetResString(IDS_UNIT_NET_FMT), p->netKBPerSec);
         swprintf_s(szGpu, sizeof(szGpu)/sizeof(WCHAR), L"%.1f %%", p->gpuPercent);
         const WCHAR *szPrio = PriorityClassToString(p->priorityClass);
 

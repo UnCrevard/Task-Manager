@@ -32,7 +32,9 @@ Il est conçu pour être compilé directement avec **MinGW-w64** (`gcc`).
 | **Changement de priorité** | `GetPriorityClass` et `SetPriorityClass` (Temps réel, Haute, Supérieure, Normale, Inférieure, Basse) via clic droit ou menu. |
 | **Graphiques de performances 1 heure (3600s)** | Bandeau en haut de la fenêtre affichant l'historique complet sur **1 heure** (3600 échantillons à 1 seconde) pour le **CPU**, la **RAM** et le **GPU** avec repères temporels horizontaux (60m, 45m, 30m, 15m, 0s). |
 | **Survol interactif & Processus responsable** | En passant la souris sur n'importe quel point du graphique d'historique 1h, un tracker vertical dynamique et une infobulle contrastée affichent le temps exact écoulé (`-XXm YYs`), la valeur de la ressource, et **le processus précis qui consommait le plus la ressource à ce moment-là** (Nom, PID, % ou Mo). |
-| **Centralisation des textes dans `resource.rc`** | Tous les libellés de l'application (colonnes, boutons, menus contextuels, tray, barres d'état, tooltips) sont centralisés dans la table des chaînes (`STRINGTABLE`) de `resource.rc` via `resource.h` et chargés par `LoadStringW` (avec fallback mémoire garanti en cas de compilation directe). |
+| **Centralisation des textes dans `resource.rc`** | Tous les libellés de l'application (colonnes, boutons, menus contextuels, tray, barres d'état, tooltips, fenêtres Paramètres & À propos) sont centralisés dans la table des chaînes (`STRINGTABLE`) de `src/resource.rc` via `src/resource.h` et chargés par `LoadStringW` (avec fallback mémoire bilingue garanti en cas de compilation directe). |
+| **Multilingue (FR / EN + Détection Auto)** | Bascule de langue à chaud sans redémarrage depuis le bouton **Paramètres** (`Système (Auto - Anglais par défaut)`, `English`, `Français`). En mode Auto, utilise `GetUserDefaultUILanguage()` et se replie automatiquement sur l'anglais si la langue système n'est pas prise en charge. |
+| **Bouton À propos & Version (`version.h`)** | Le bouton **À propos** ouvre une fenêtre affichant le nom, le numéro de version (`APP_VER_MAJOR.MINOR.PATCH.BUILD`), le numéro de build incrémenté à chaque modification de code, la date/heure de compilation et les métadonnées PE (`VERSIONINFO`). |
 | **Suppression du bouton Tuer superflu** | Le bouton « Tuer » a été retiré de la barre d'outils au profit d'un agencement sans vide (la touche **Suppr** / `VK_DELETE` ou le clic droit permettant une terminaison immédiate sans confirmation). |
 | **Terminaison brutale immédiate sans confirmation** | `OpenProcess(PROCESS_TERMINATE, FALSE, pid)` puis appel direct `TerminateProcess(hProcess, 1)` **sans aucune boîte de dialogue de confirmation**, déclenché par la touche **Suppr** (`VK_DELETE`) ou le menu contextuel. |
 | **Instance unique (Single Instance)** | Empêche les lancements multiples simultanés via un Mutex nommé `Local\TaskManager_SingleInstance_Mutex_9D4F2` et restaure l'instance existante au premier plan. |
@@ -50,6 +52,7 @@ Le programme crée ou met à jour automatiquement `settings.ini` dans le dossier
 [Settings]
 AutoRefresh=1
 HideWindowsProcesses=0
+Language=auto
 SortColumn=2
 SortAscending=0
 
@@ -108,6 +111,8 @@ gcc -mwindows -O2 -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8 -Isrc
 - **Bouton « Exclusions (N) »** : Affiche la liste des processus masqués pour les réafficher individuellement ou tout restaurer.
 - **Bouton « Processus Windows »** : Masque/affiche les processus natifs de l'OS.
 - **Bouton « Auto-refresh »** : Active ou suspend le timer de rafraîchissement à 1 seconde.
+- **Bouton « Paramètres » / « Settings »** : Ouvre la fenêtre des réglages (sélection de la langue `Auto` / `English` / `Français`, auto-refresh, masquage des processus Windows).
+- **Bouton « À propos » / « About »** : Affiche les informations de version (`src/version.h`), le numéro de build et la date de compilation.
 - **Fermeture de la fenêtre (`[X]`)** : Réduit automatiquement l'application dans la barre des tâches / System Tray.
 - **Double-clic sur l'icône Tray** : Réaffiche et restaure l'application au premier plan.
 - **Clic-droit sur l'icône Tray** : Ouvre le menu contextuel (« Ouvrir le Task Manager » ou « Quitter définitivement »).

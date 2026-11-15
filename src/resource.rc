@@ -1,15 +1,46 @@
 #pragma code_page(65001)
 
-// Resource file pour le Gestionnaire des tâches Win32 natif
+// Resource file pour le Gestionnaire des tâches Win32 natif (Multilingue FR / EN)
 #include "resource.h"
+#include "version.h"
 
 // 1ère icône du binaire PE = icône par défaut de l'exécutable sous l'explorateur Windows
 IDI_APP_ICON ICON "app.ico"
 
-// Manifeste Windows moderne pour activer les Styles Visuels (Common Controls v6 - Adieu le thème 98 !)
+// Manifeste Windows moderne pour activer les Styles Visuels (Common Controls v6)
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "taskmgr.manifest"
 
-// Table des chaînes de caractères centralisée (STRINGTABLE)
+// Informations de version intégrées au binaire PE (Propriétés Windows -> Détails)
+1 VERSIONINFO
+FILEVERSION     APP_VER_MAJOR, APP_VER_MINOR, APP_VER_PATCH, APP_VER_BUILD
+PRODUCTVERSION  APP_VER_MAJOR, APP_VER_MINOR, APP_VER_PATCH, APP_VER_BUILD
+FILEFLAGSMASK   0x3fL
+FILEFLAGS       0x0L
+FILEOS          0x40004L
+FILETYPE        0x1L
+FILESUBTYPE     0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "000004b0"
+        BEGIN
+            VALUE "FileDescription",  "Windows Native Task Manager (C Win32)"
+            VALUE "FileVersion",      APP_VERSION_FULL_A
+            VALUE "InternalName",     "taskmgr.exe"
+            VALUE "OriginalFilename", "taskmgr.exe"
+            VALUE "ProductName",      "Win32 Native Task Manager"
+            VALUE "ProductVersion",   APP_VERSION_FULL_A
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0, 1200
+    END
+END
+
+// ============================================================================
+// Table des chaînes de caractères — FRANÇAIS (ID base 5000)
+// ============================================================================
 STRINGTABLE
 BEGIN
     IDS_APP_TITLE               "Gestionnaire des tâches Windows (C Win32 Natif)"
@@ -33,6 +64,8 @@ BEGIN
     IDS_BTN_WINDOWS_OFF         "Windows Non"
     IDS_BTN_EXCLUSIONS_FMT      "Exclusions (%d)"
     IDS_LABEL_FILTER            "Filtrer :"
+    IDS_BTN_SETTINGS            "Paramètres"
+    IDS_BTN_ABOUT               "À propos"
 
     // Menu contextuel
     IDS_MENU_KILL_IMMEDIATE     "Tuer immédiatement\tSuppr"
@@ -58,6 +91,7 @@ BEGIN
     IDS_TRAY_CPU_FMT            "Historique CPU : %.1f %%"
     IDS_TRAY_RAM_FMT            "Historique RAM : %.1f %% (%.1f / %.1f Go)"
     IDS_TRAY_GPU_FMT            "Historique GPU : %.1f %%"
+    IDS_TRAY_TIP_RAM_FMT        "RAM : %.1f %% (%.1f/%.1fGo)\n1. %.10s: %uMo\n2. %.10s: %uMo\n3. %.10s: %uMo\n4. %.10s: %uMo"
 
     // Barre d'état (Status Bar)
     IDS_STATUS_PROCESSES_FMT    "Processus : %d / %d"
@@ -75,9 +109,9 @@ BEGIN
     IDS_GRAPH_GPU_SUB           "Moteur 3D • 1 heure"
 
     // Infobulles / Tooltips d'historique 1h
-    IDS_TIP_TIME_MIN_SEC        "Il y a %dm %02ds"
-    IDS_TIP_TIME_SEC            "Il y a %ds"
-    IDS_TIP_TOP_PROC            "Top : %s (PID %u)"
+    IDS_TIP_TIME_MIN_SEC        "-%dm %02ds • %.1f %%"
+    IDS_TIP_TIME_SEC            "-%ds • %.1f %%"
+    IDS_TIP_TOP_PROC            "Top : %.18s (%u)"
     IDS_TIP_USAGE_PCT           "Utilisation : %.1f %%"
     IDS_TIP_USAGE_RAM           "Mémoire : %u Mo"
     IDS_TIP_NO_DATA             "Aucune activité"
@@ -91,8 +125,149 @@ BEGIN
     IDS_PRIO_IDLE               "Basse"
     IDS_PRIO_UNKNOWN            "Inconnue"
 
-    // CLI restreinte
+    // CLI restreinte & unités
     IDS_STR_RESTRICTED          "[Système / Accès restreint]"
     IDS_STR_RESTRICTED_ACCESS   "[Accès restreint]"
     IDS_STR_NO_NTAPI            "[Non disponible - NTAPI absente]"
+    IDS_UNIT_RAM_FMT            "%u Mo"
+    IDS_UNIT_DISK_FMT           "%.2f Mo/s"
+    IDS_UNIT_NET_FMT            "%.1f Ko/s"
+
+    // Fenêtre Paramètres
+    IDS_SETTINGS_TITLE          "Paramètres"
+    IDS_SETTINGS_LANG_LABEL     "Langue de l'interface :"
+    IDS_SETTINGS_LANG_AUTO      "Système (Auto - Anglais par défaut)"
+    IDS_SETTINGS_LANG_EN        "English"
+    IDS_SETTINGS_LANG_FR        "Français"
+    IDS_SETTINGS_AUTOREFRESH    "Rafraîchissement automatique (1 seconde)"
+    IDS_SETTINGS_HIDE_WINDOWS   "Masquer les processus Windows de base"
+    IDS_SETTINGS_ACTIVE_LANG_FMT "Langue active : %s"
+    IDS_BTN_OK                  "OK"
+    IDS_BTN_CANCEL              "Annuler"
+
+    // Fenêtre À propos
+    IDS_ABOUT_TITLE             "À propos"
+    IDS_ABOUT_APP_NAME          "Gestionnaire des tâches Windows"
+    IDS_ABOUT_VERSION_FMT       "Version %s (Build %d)"
+    IDS_ABOUT_COMPILE_FMT       "Compilé le %s à %s"
+    IDS_ABOUT_TECH              "Win32 API / NTAPI natif en C pur (MinGW-w64)"
+    IDS_ABOUT_DESC              "Moniteur de processus temps réel sans scintillement avec historique 1h, icônes dynamiques dans la barre des tâches, mode sombre adaptatif et gestion des exclusions."
+    IDS_BTN_CLOSE               "Fermer"
+END
+
+// ============================================================================
+// String Table — ENGLISH (ID base 6000 = EN_ID(id))
+// ============================================================================
+STRINGTABLE
+BEGIN
+    EN_ID(IDS_APP_TITLE)               "Windows Task Manager (Native C Win32)"
+
+    // ListView columns
+    EN_ID(IDS_COL_NAME)                "Image Name"
+    EN_ID(IDS_COL_PID)                 "PID"
+    EN_ID(IDS_COL_CPU)                 "CPU %"
+    EN_ID(IDS_COL_RAM)                 "Memory (MB)"
+    EN_ID(IDS_COL_DISK)                "Disk (MB/s)"
+    EN_ID(IDS_COL_NET)                 "Network (KB/s)"
+    EN_ID(IDS_COL_GPU)                 "GPU %"
+    EN_ID(IDS_COL_PRIORITY)            "Priority"
+    EN_ID(IDS_COL_CMDLINE)             "Command Line (CLI Args)"
+
+    // Toolbar controls
+    EN_ID(IDS_BTN_AUTOREFRESH_ON)      "Auto-refresh On"
+    EN_ID(IDS_BTN_AUTOREFRESH_OFF)     "Auto-refresh Off"
+    EN_ID(IDS_BTN_REFRESH)             "Refresh (F5)"
+    EN_ID(IDS_BTN_WINDOWS_ON)          "Windows On"
+    EN_ID(IDS_BTN_WINDOWS_OFF)         "Windows Off"
+    EN_ID(IDS_BTN_EXCLUSIONS_FMT)      "Exclusions (%d)"
+    EN_ID(IDS_LABEL_FILTER)            "Filter:"
+    EN_ID(IDS_BTN_SETTINGS)            "Settings"
+    EN_ID(IDS_BTN_ABOUT)               "About"
+
+    // Context menu
+    EN_ID(IDS_MENU_KILL_IMMEDIATE)     "Kill immediately\tDel"
+    EN_ID(IDS_MENU_PRIORITY_REALTIME)  "Realtime"
+    EN_ID(IDS_MENU_PRIORITY_HIGH)      "High"
+    EN_ID(IDS_MENU_PRIORITY_ABOVENORM) "Above normal"
+    EN_ID(IDS_MENU_PRIORITY_NORMAL)    "Normal"
+    EN_ID(IDS_MENU_PRIORITY_BELOWNORM) "Below normal"
+    EN_ID(IDS_MENU_PRIORITY_IDLE)      "Low (Idle)"
+    EN_ID(IDS_MENU_SET_PRIORITY)       "Set priority"
+    EN_ID(IDS_MENU_COPY_CMDLINE)       "Copy command line (CLI)"
+    EN_ID(IDS_MENU_OPEN_LOCATION)      "Open file location"
+    EN_ID(IDS_MENU_HIDE_BY_NAME_FMT)   "Hide ""%s"" by name"
+    EN_ID(IDS_MENU_MANAGE_EXCLUSIONS)  "Manage excluded processes..."
+    EN_ID(IDS_MENU_NO_EXCLUSIONS)      "(No excluded processes)"
+    EN_ID(IDS_MENU_RESTORE_HEADER)     "--- Click to restore ---"
+    EN_ID(IDS_MENU_RESTORE_ITEM_FMT)   "Restore: %s"
+    EN_ID(IDS_MENU_CLEAR_EXCLUSIONS)   "Restore all (clear exclusions)"
+
+    // System Tray
+    EN_ID(IDS_TRAY_OPEN)               "Open Task Manager"
+    EN_ID(IDS_TRAY_EXIT)               "Exit permanently"
+    EN_ID(IDS_TRAY_CPU_FMT)            "CPU History: %.1f %%"
+    EN_ID(IDS_TRAY_RAM_FMT)            "RAM History: %.1f %% (%.1f / %.1f GB)"
+    EN_ID(IDS_TRAY_GPU_FMT)            "GPU History: %.1f %%"
+    EN_ID(IDS_TRAY_TIP_RAM_FMT)        "RAM: %.1f %% (%.1f/%.1fGB)\n1. %.10s: %uMB\n2. %.10s: %uMB\n3. %.10s: %uMB\n4. %.10s: %uMB"
+
+    // Status Bar
+    EN_ID(IDS_STATUS_PROCESSES_FMT)    "Processes: %d / %d"
+    EN_ID(IDS_STATUS_CPU_FMT)          "Total CPU: %.1f %%"
+    EN_ID(IDS_STATUS_RAM_FMT)          "RAM: %u / %u MB (%u %%)"
+    EN_ID(IDS_STATUS_EXCLUSIONS_FMT)   "Exclusions: %d active | Sort: %s %s"
+
+    // 1-hour performance graphs
+    EN_ID(IDS_GRAPH_CPU_TITLE)         "CPU"
+    EN_ID(IDS_GRAPH_CPU_SUB)           "1 hour • % utilization"
+    EN_ID(IDS_GRAPH_RAM_TITLE)         "Memory"
+    EN_ID(IDS_GRAPH_RAM_SUB_FMT)       "%.1f / %.1f GB (1h)"
+    EN_ID(IDS_GRAPH_RAM_SUB_DEFAULT)   "Memory usage (1h)"
+    EN_ID(IDS_GRAPH_GPU_TITLE)         "GPU"
+    EN_ID(IDS_GRAPH_GPU_SUB)           "3D Engine • 1 hour"
+
+    // 1h history hover tooltips
+    EN_ID(IDS_TIP_TIME_MIN_SEC)        "-%dm %02ds • %.1f %%"
+    EN_ID(IDS_TIP_TIME_SEC)            "-%ds • %.1f %%"
+    EN_ID(IDS_TIP_TOP_PROC)            "Top: %.18s (%u)"
+    EN_ID(IDS_TIP_USAGE_PCT)           "Usage: %.1f %%"
+    EN_ID(IDS_TIP_USAGE_RAM)           "Memory: %u MB"
+    EN_ID(IDS_TIP_NO_DATA)             "No activity"
+
+    // Priority classes (list display)
+    EN_ID(IDS_PRIO_REALTIME)           "Realtime"
+    EN_ID(IDS_PRIO_HIGH)               "High"
+    EN_ID(IDS_PRIO_ABOVENORM)          "Above normal"
+    EN_ID(IDS_PRIO_NORMAL)             "Normal"
+    EN_ID(IDS_PRIO_BELOWNORM)          "Below normal"
+    EN_ID(IDS_PRIO_IDLE)               "Low"
+    EN_ID(IDS_PRIO_UNKNOWN)            "Unknown"
+
+    // Restricted CLI & units
+    EN_ID(IDS_STR_RESTRICTED)          "[System / Restricted access]"
+    EN_ID(IDS_STR_RESTRICTED_ACCESS)   "[Restricted access]"
+    EN_ID(IDS_STR_NO_NTAPI)            "[Unavailable - NTAPI missing]"
+    EN_ID(IDS_UNIT_RAM_FMT)            "%u MB"
+    EN_ID(IDS_UNIT_DISK_FMT)           "%.2f MB/s"
+    EN_ID(IDS_UNIT_NET_FMT)            "%.1f KB/s"
+
+    // Settings dialog
+    EN_ID(IDS_SETTINGS_TITLE)          "Settings"
+    EN_ID(IDS_SETTINGS_LANG_LABEL)     "Interface language:"
+    EN_ID(IDS_SETTINGS_LANG_AUTO)      "System (Auto - English fallback)"
+    EN_ID(IDS_SETTINGS_LANG_EN)        "English"
+    EN_ID(IDS_SETTINGS_LANG_FR)        "Français"
+    EN_ID(IDS_SETTINGS_AUTOREFRESH)    "Auto-refresh (1 second)"
+    EN_ID(IDS_SETTINGS_HIDE_WINDOWS)   "Hide core Windows processes"
+    EN_ID(IDS_SETTINGS_ACTIVE_LANG_FMT) "Active language: %s"
+    EN_ID(IDS_BTN_OK)                  "OK"
+    EN_ID(IDS_BTN_CANCEL)              "Cancel"
+
+    // About dialog
+    EN_ID(IDS_ABOUT_TITLE)             "About"
+    EN_ID(IDS_ABOUT_APP_NAME)          "Windows Task Manager"
+    EN_ID(IDS_ABOUT_VERSION_FMT)       "Version %s (Build %d)"
+    EN_ID(IDS_ABOUT_COMPILE_FMT)       "Built on %s at %s"
+    EN_ID(IDS_ABOUT_TECH)              "Native Win32 API / NTAPI in pure C (MinGW-w64)"
+    EN_ID(IDS_ABOUT_DESC)              "Flicker-free real-time process monitor with 1-hour history, dynamic tray icons, adaptive dark mode, and exclusion management."
+    EN_ID(IDS_BTN_CLOSE)               "Close"
 END

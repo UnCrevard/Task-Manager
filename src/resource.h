@@ -13,6 +13,10 @@
 #define RT_MANIFEST                     24
 #endif
 
+// Décalage pour les chaînes anglaises dans la STRINGTABLE (FR: 5000+, EN: 6000+)
+#define IDS_EN_OFFSET                   1000
+#define EN_ID(id)                       ((id) + IDS_EN_OFFSET)
+
 // --- Identifiants de la table des chaînes (STRINGTABLE) ---
 
 // Titre de l'application
@@ -37,6 +41,8 @@
 #define IDS_BTN_WINDOWS_OFF             5024
 #define IDS_BTN_EXCLUSIONS_FMT          5025
 #define IDS_LABEL_FILTER                5026
+#define IDS_BTN_SETTINGS                5027
+#define IDS_BTN_ABOUT                   5028
 
 // Menu contextuel
 #define IDS_MENU_KILL_IMMEDIATE         5030
@@ -62,6 +68,7 @@
 #define IDS_TRAY_CPU_FMT                5052
 #define IDS_TRAY_RAM_FMT                5053
 #define IDS_TRAY_GPU_FMT                5054
+#define IDS_TRAY_TIP_RAM_FMT            5055
 
 // Barre d'état (Status Bar)
 #define IDS_STATUS_PROCESSES_FMT        5060
@@ -95,9 +102,33 @@
 #define IDS_PRIO_IDLE                   5095
 #define IDS_PRIO_UNKNOWN                5096
 
-// Ligne de commande restreinte
+// Ligne de commande restreinte & unités
 #define IDS_STR_RESTRICTED              5100
 #define IDS_STR_RESTRICTED_ACCESS       5101
 #define IDS_STR_NO_NTAPI                5102
+#define IDS_UNIT_RAM_FMT                5103
+#define IDS_UNIT_DISK_FMT               5104
+#define IDS_UNIT_NET_FMT                5105
+
+// Fenêtre Paramètres (Settings)
+#define IDS_SETTINGS_TITLE              5110
+#define IDS_SETTINGS_LANG_LABEL         5111
+#define IDS_SETTINGS_LANG_AUTO          5112
+#define IDS_SETTINGS_LANG_EN            5113
+#define IDS_SETTINGS_LANG_FR            5114
+#define IDS_SETTINGS_AUTOREFRESH        5115
+#define IDS_SETTINGS_HIDE_WINDOWS       5116
+#define IDS_SETTINGS_ACTIVE_LANG_FMT    5117
+#define IDS_BTN_OK                      5118
+#define IDS_BTN_CANCEL                  5119
+
+// Fenêtre À propos (About)
+#define IDS_ABOUT_TITLE                 5130
+#define IDS_ABOUT_APP_NAME              5131
+#define IDS_ABOUT_VERSION_FMT           5132
+#define IDS_ABOUT_COMPILE_FMT           5133
+#define IDS_ABOUT_TECH                  5134
+#define IDS_ABOUT_DESC                  5135
+#define IDS_BTN_CLOSE                   5136
 
 #endif // RESOURCE_H

@@ -75,6 +75,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 
 // Identifiants du Timer
 #define IDT_REFRESH_TIMER    2001
+#define IDT_TRAY_RETRY_TIMER 2002
 #define REFRESH_INTERVAL_MS  1000
 
 // Message personnalisé et identifiants pour la zone de notification (Tray Icon)
@@ -235,9 +236,10 @@ static HFONT g_hFont = NULL;
 static HFONT g_hFontBold = NULL;
 static HFONT g_hFontSmall = NULL;
 
-// Instance unique (Single Instance)
+// Instance unique (Single Instance) & Restauration de la barre des tâches (Explorer crash)
 static HANDLE g_hSingleInstanceMutex = NULL;
 static UINT g_uMsgRestoreInstance = 0;
+static UINT g_uMsgTaskbarCreated = 0;
 
 // Pointeur dynamique vers NtQueryInformationProcess
 typedef NTSTATUS (NTAPI *pfnNtQueryInformationProcess)(
@@ -282,6 +284,7 @@ void UpdateExclusionsButtonText(void);
 // Gestion des 3 icônes dynamiques d'historique dans la barre des tâches (Tray Icons)
 HICON CreateHistoryGraphIcon(const double *history, int count, DWORD baseColor, DWORD peakColor, DWORD alertColor);
 void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb);
+void RecreateTrayIcons(BOOL bResetCreatedFlags);
 void RemoveAllTrayIcons(void);
 
 // ============================================================================
@@ -802,34 +805,66 @@ void GetTop4Consumers(int resourceType, TopConsumer top[4]) {
     }
 }
 
-// Mise à jour des 3 icônes distinctes d'historique (CPU, RAM, GPU) dans la barre des tâches
-// avec affichage dynamique des 4 premiers consommateurs au survol de la souris
-void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb) {
+// Autorise la réception d'un message même si l'application tourne avec des privilèges élevés (UIPI)
+static void AllowMessageThroughUIPI(HWND hWnd, UINT uMsg) {
+    if (!hWnd || uMsg == 0) return;
+    HMODULE hUser32 = GetModuleHandleW(L"user32.dll");
+    if (!hUser32) return;
+
+    typedef BOOL (WINAPI *pfnChangeWindowMessageFilterEx)(HWND, UINT, DWORD, PVOID);
+    pfnChangeWindowMessageFilterEx pChangeFilter =
+        (pfnChangeWindowMessageFilterEx)(void*)GetProcAddress(hUser32, "ChangeWindowMessageFilterEx");
+    if (pChangeFilter) {
+        // MSGFLT_ALLOW = 1
+        pChangeFilter(hWnd, uMsg, 1, NULL);
+    }
+}
+
+// Ajout ou mise à jour sécurisée d'une icône Tray (repli automatique sur NIM_ADD si Explorer a redémarré)
+static void UpsertSingleTrayIcon(NOTIFYICONDATAW *pNid, BOOL *pbCreated) {
+    if (!*pbCreated) {
+        if (Shell_NotifyIconW(NIM_ADD, pNid)) {
+            *pbCreated = TRUE;
+        }
+    } else {
+        if (!Shell_NotifyIconW(NIM_MODIFY, pNid)) {
+            *pbCreated = FALSE;
+            if (Shell_NotifyIconW(NIM_ADD, pNid)) {
+                *pbCreated = TRUE;
+            }
+        }
+    }
+}
+
+// Synchronisation interne des 3 icônes d'historique (avec mise à jour optionnelle de l'historique)
+static void SyncTrayIconsInternal(BOOL bUpdateHistory, double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb) {
     if (!g_hMainWnd) return;
 
-    g_LastCpuPct = cpuPct;
-    g_LastMemPct = memPct;
-    g_LastGpuPct = gpuPct;
-    g_LastUsedRamGb = usedRamGb;
-    g_LastTotalRamGb = totalRamGb;
+    if (bUpdateHistory) {
+        g_LastCpuPct = cpuPct;
+        g_LastMemPct = memPct;
+        g_LastGpuPct = gpuPct;
+        g_LastUsedRamGb = usedRamGb;
+        g_LastTotalRamGb = totalRamGb;
 
-    // Décalage de l'historique vers la gauche et ajout du nouvel échantillon
-    if (g_TrayHistoryCount == 0) {
-        for (int i = 0; i < TRAY_HISTORY_POINTS; i++) {
-            g_TrayCpuHistory[i] = cpuPct;
-            g_TrayRamHistory[i] = memPct;
-            g_TrayGpuHistory[i] = gpuPct;
+        // Décalage de l'historique vers la gauche et ajout du nouvel échantillon
+        if (g_TrayHistoryCount == 0) {
+            for (int i = 0; i < TRAY_HISTORY_POINTS; i++) {
+                g_TrayCpuHistory[i] = cpuPct;
+                g_TrayRamHistory[i] = memPct;
+                g_TrayGpuHistory[i] = gpuPct;
+            }
+            g_TrayHistoryCount = TRAY_HISTORY_POINTS;
+        } else {
+            for (int i = 0; i < TRAY_HISTORY_POINTS - 1; i++) {
+                g_TrayCpuHistory[i] = g_TrayCpuHistory[i + 1];
+                g_TrayRamHistory[i] = g_TrayRamHistory[i + 1];
+                g_TrayGpuHistory[i] = g_TrayGpuHistory[i + 1];
+            }
+            g_TrayCpuHistory[TRAY_HISTORY_POINTS - 1] = cpuPct;
+            g_TrayRamHistory[TRAY_HISTORY_POINTS - 1] = memPct;
+            g_TrayGpuHistory[TRAY_HISTORY_POINTS - 1] = gpuPct;
         }
-        g_TrayHistoryCount = TRAY_HISTORY_POINTS;
-    } else {
-        for (int i = 0; i < TRAY_HISTORY_POINTS - 1; i++) {
-            g_TrayCpuHistory[i] = g_TrayCpuHistory[i + 1];
-            g_TrayRamHistory[i] = g_TrayRamHistory[i + 1];
-            g_TrayGpuHistory[i] = g_TrayGpuHistory[i + 1];
-        }
-        g_TrayCpuHistory[TRAY_HISTORY_POINTS - 1] = cpuPct;
-        g_TrayRamHistory[TRAY_HISTORY_POINTS - 1] = memPct;
-        g_TrayGpuHistory[TRAY_HISTORY_POINTS - 1] = gpuPct;
     }
 
     // Calcul des Top 4 consommateurs pour chaque ressource
@@ -855,17 +890,13 @@ void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRam
 
         swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
             L"CPU : %.1f %%\n1. %.11s: %.1f%%\n2. %.11s: %.1f%%\n3. %.11s: %.1f%%\n4. %.11s: %.1f%%",
-            cpuPct,
+            g_LastCpuPct,
             topCpu[0].szName[0] ? topCpu[0].szName : L"-", (topCpu[0].value > 0.0) ? topCpu[0].value : 0.0,
             topCpu[1].szName[0] ? topCpu[1].szName : L"-", (topCpu[1].value > 0.0) ? topCpu[1].value : 0.0,
             topCpu[2].szName[0] ? topCpu[2].szName : L"-", (topCpu[2].value > 0.0) ? topCpu[2].value : 0.0,
             topCpu[3].szName[0] ? topCpu[3].szName : L"-", (topCpu[3].value > 0.0) ? topCpu[3].value : 0.0);
 
-        if (!g_bTrayCpuCreated) {
-            if (Shell_NotifyIconW(NIM_ADD, &nid)) g_bTrayCpuCreated = TRUE;
-        } else {
-            Shell_NotifyIconW(NIM_MODIFY, &nid);
-        }
+        UpsertSingleTrayIcon(&nid, &g_bTrayCpuCreated);
 
         if (g_hIconCpu) DestroyIcon(g_hIconCpu);
         g_hIconCpu = hNewCpu;
@@ -886,17 +917,13 @@ void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRam
 
         swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
             L"RAM : %.1f %% (%.1f/%.1fGo)\n1. %.10s: %uMo\n2. %.10s: %uMo\n3. %.10s: %uMo\n4. %.10s: %uMo",
-            memPct, usedRamGb, totalRamGb,
+            g_LastMemPct, g_LastUsedRamGb, g_LastTotalRamGb,
             topRam[0].szName[0] ? topRam[0].szName : L"-", (UINT)(topRam[0].value > 0.0 ? topRam[0].value : 0.0),
             topRam[1].szName[0] ? topRam[1].szName : L"-", (UINT)(topRam[1].value > 0.0 ? topRam[1].value : 0.0),
             topRam[2].szName[0] ? topRam[2].szName : L"-", (UINT)(topRam[2].value > 0.0 ? topRam[2].value : 0.0),
             topRam[3].szName[0] ? topRam[3].szName : L"-", (UINT)(topRam[3].value > 0.0 ? topRam[3].value : 0.0));
 
-        if (!g_bTrayRamCreated) {
-            if (Shell_NotifyIconW(NIM_ADD, &nid)) g_bTrayRamCreated = TRUE;
-        } else {
-            Shell_NotifyIconW(NIM_MODIFY, &nid);
-        }
+        UpsertSingleTrayIcon(&nid, &g_bTrayRamCreated);
 
         if (g_hIconRam) DestroyIcon(g_hIconRam);
         g_hIconRam = hNewRam;
@@ -917,20 +944,45 @@ void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRam
 
         swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
             L"GPU : %.1f %%\n1. %.11s: %.1f%%\n2. %.11s: %.1f%%\n3. %.11s: %.1f%%\n4. %.11s: %.1f%%",
-            gpuPct,
+            g_LastGpuPct,
             topGpu[0].szName[0] ? topGpu[0].szName : L"-", (topGpu[0].value > 0.0) ? topGpu[0].value : 0.0,
             topGpu[1].szName[0] ? topGpu[1].szName : L"-", (topGpu[1].value > 0.0) ? topGpu[1].value : 0.0,
             topGpu[2].szName[0] ? topGpu[2].szName : L"-", (topGpu[2].value > 0.0) ? topGpu[2].value : 0.0,
             topGpu[3].szName[0] ? topGpu[3].szName : L"-", (topGpu[3].value > 0.0) ? topGpu[3].value : 0.0);
 
-        if (!g_bTrayGpuCreated) {
-            if (Shell_NotifyIconW(NIM_ADD, &nid)) g_bTrayGpuCreated = TRUE;
-        } else {
-            Shell_NotifyIconW(NIM_MODIFY, &nid);
-        }
+        UpsertSingleTrayIcon(&nid, &g_bTrayGpuCreated);
 
         if (g_hIconGpu) DestroyIcon(g_hIconGpu);
         g_hIconGpu = hNewGpu;
+    }
+
+    if (g_bTrayCpuCreated && g_bTrayRamCreated && g_bTrayGpuCreated) {
+        KillTimer(g_hMainWnd, IDT_TRAY_RETRY_TIMER);
+    }
+}
+
+// Mise à jour des 3 icônes distinctes d'historique (CPU, RAM, GPU) dans la barre des tâches
+// avec affichage dynamique des 4 premiers consommateurs au survol de la souris
+void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb) {
+    SyncTrayIconsInternal(TRUE, cpuPct, memPct, gpuPct, usedRamGb, totalRamGb);
+}
+
+// Recréation des icônes Tray suite au redémarrage d'explorer.exe (TaskbarCreated)
+void RecreateTrayIcons(BOOL bResetCreatedFlags) {
+    if (!g_hMainWnd) return;
+
+    if (bResetCreatedFlags) {
+        g_bTrayCpuCreated = FALSE;
+        g_bTrayRamCreated = FALSE;
+        g_bTrayGpuCreated = FALSE;
+    }
+
+    SyncTrayIconsInternal(FALSE, g_LastCpuPct, g_LastMemPct, g_LastGpuPct, g_LastUsedRamGb, g_LastTotalRamGb);
+
+    if (!g_bTrayCpuCreated || !g_bTrayRamCreated || !g_bTrayGpuCreated) {
+        SetTimer(g_hMainWnd, IDT_TRAY_RETRY_TIMER, 1000, NULL);
+    } else {
+        KillTimer(g_hMainWnd, IDT_TRAY_RETRY_TIMER);
     }
 }
 
@@ -2177,8 +2229,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
 
+    // Recréation automatique des icônes Tray lorsqu'Explorer redémarre après un crash
+    if (g_uMsgTaskbarCreated != 0 && message == g_uMsgTaskbarCreated) {
+        RecreateTrayIcons(TRUE);
+        return 0;
+    }
+
     switch (message) {
     case WM_CREATE: {
+        g_hMainWnd = hWnd;
+        g_uMsgTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
+        AllowMessageThroughUIPI(hWnd, g_uMsgTaskbarCreated);
+        AllowMessageThroughUIPI(hWnd, g_uMsgRestoreInstance);
         // Récupération de la police officielle Windows Segoe UI via les métriques système (au lieu de MS Sans Serif / 98)
         NONCLIENTMETRICSW ncm = { 0 };
         ncm.cbSize = sizeof(NONCLIENTMETRICSW);
@@ -2596,6 +2658,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     case WM_TIMER:
         if (wParam == IDT_REFRESH_TIMER) {
             RefreshProcessList();
+        } else if (wParam == IDT_TRAY_RETRY_TIMER) {
+            RecreateTrayIcons(FALSE);
         }
         return 0;
 
@@ -2776,6 +2840,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             g_hSingleInstanceMutex = NULL;
         }
         SaveSettings();
+        KillTimer(hWnd, IDT_TRAY_RETRY_TIMER);
         if (g_bAutoRefresh) {
             KillTimer(hWnd, IDT_REFRESH_TIMER);
         }

@@ -4,7 +4,7 @@
 CC ?= gcc
 WINDRES ?= windres
 SRC_DIR = src
-CFLAGS = -mwindows -O2 -s -static -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8 -I$(SRC_DIR)
+CFLAGS = -mwindows -O2 -s -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8 -I$(SRC_DIR)
 LIBS = -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32 -luxtheme -ldwmapi
 
 TARGET = taskmgr.exe

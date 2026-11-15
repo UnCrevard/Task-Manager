@@ -3,20 +3,21 @@
 
 CC ?= gcc
 WINDRES ?= windres
-CFLAGS = -mwindows -O2 -s -static -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8
+SRC_DIR = src
+CFLAGS = -mwindows -O2 -s -static -Wall -Wextra -finput-charset=UTF-8 -fexec-charset=UTF-8 -I$(SRC_DIR)
 LIBS = -lcomctl32 -lpsapi -lntdll -lole32 -lshell32 -lgdi32 -luxtheme -ldwmapi
 
 TARGET = taskmgr.exe
-SRC = taskmgr.c
-RC = resource.rc
-RES = resource.o
+SRC = $(SRC_DIR)/taskmgr.c
+RC = $(SRC_DIR)/resource.rc
+RES = $(SRC_DIR)/resource.o
 
 all: $(TARGET)
 
-$(RES): $(RC) app.ico taskmgr.manifest resource.h
-	$(WINDRES) --codepage=65001 $(RC) -O coff -o $(RES)
+$(RES): $(RC) $(SRC_DIR)/app.ico $(SRC_DIR)/taskmgr.manifest $(SRC_DIR)/resource.h
+	$(WINDRES) --codepage=65001 -I $(SRC_DIR) $(RC) -O coff -o $(RES)
 
-$(TARGET): $(SRC) $(RES) resource.h
+$(TARGET): $(SRC) $(RES) $(SRC_DIR)/resource.h
 	-taskkill /IM $(TARGET) /F
 	$(CC) $(CFLAGS) -o $(TARGET) $(SRC) $(RES) $(LIBS)
 	@echo Compilation terminee avec succes : $(TARGET)

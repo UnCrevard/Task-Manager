@@ -1,12 +1,7 @@
-.aistudio/
+/*
 
-src/
-
-.env.*
-
-index.html
-*.json
-*.ts
-
-settings.ini
-*.o
+!.gitignore
+!src/
+!Makefile
+!*.md
+!*.exe

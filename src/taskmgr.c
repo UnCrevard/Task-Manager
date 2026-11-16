@@ -127,7 +127,11 @@ enum {
 typedef enum {
     APP_LANG_AUTO = 0,
     APP_LANG_EN   = 1,
-    APP_LANG_FR   = 2
+    APP_LANG_FR   = 2,
+    APP_LANG_ES   = 3,
+    APP_LANG_DE   = 4,
+    APP_LANG_IT   = 5,
+    APP_LANG_PT   = 6
 } AppLanguage;
 
 // Prototypes des fonctions d'accès aux ressources et multilingue
@@ -318,15 +322,20 @@ void RemoveAllTrayIcons(void);
 #define RES_BUF_LEN 256
 
 int GetEffectiveLanguage(void) {
-    if (g_nLanguageSetting == APP_LANG_EN) return APP_LANG_EN;
-    if (g_nLanguageSetting == APP_LANG_FR) return APP_LANG_FR;
+    if (g_nLanguageSetting >= APP_LANG_EN && g_nLanguageSetting <= APP_LANG_PT) {
+        return g_nLanguageSetting;
+    }
 
     // Mode Auto : langue UI du système Windows, repli sur l'anglais si non supportée
     LANGID langId = GetUserDefaultUILanguage();
-    if (PRIMARYLANGID(langId) == LANG_FRENCH) {
-        return APP_LANG_FR;
+    switch (PRIMARYLANGID(langId)) {
+    case LANG_FRENCH:     return APP_LANG_FR;
+    case LANG_SPANISH:    return APP_LANG_ES;
+    case LANG_GERMAN:     return APP_LANG_DE;
+    case LANG_ITALIAN:    return APP_LANG_IT;
+    case LANG_PORTUGUESE: return APP_LANG_PT;
+    default:              return APP_LANG_EN;
     }
-    return APP_LANG_EN;
 }
 
 const WCHAR* GetResString(UINT uID) {
@@ -337,14 +346,22 @@ const WCHAR* GetResString(UINT uID) {
     s_bufIdx = (s_bufIdx + 1) % RES_BUF_COUNT;
 
     int effLang = GetEffectiveLanguage();
-    UINT targetID = (effLang == APP_LANG_EN) ? EN_ID(uID) : uID;
+    UINT targetID = uID;
+    switch (effLang) {
+    case APP_LANG_EN: targetID = EN_ID(uID); break;
+    case APP_LANG_ES: targetID = ES_ID(uID); break;
+    case APP_LANG_DE: targetID = DE_ID(uID); break;
+    case APP_LANG_IT: targetID = IT_ID(uID); break;
+    case APP_LANG_PT: targetID = PT_ID(uID); break;
+    default:          targetID = uID;        break;
+    }
 
     if (LoadStringW(GetModuleHandleW(NULL), targetID, s_bufs[idx], RES_BUF_LEN) > 0) {
         return s_bufs[idx];
     }
 
-    // Valeur de secours (fallback) bilingue si l'exécutable est compilé sans .rc lié
-    BOOL bEn = (effLang == APP_LANG_EN);
+    // Valeur de secours (fallback) si l'exécutable est compilé sans .rc lié
+    BOOL bEn = (effLang != APP_LANG_FR);
     switch (uID) {
     case IDS_APP_TITLE: return bEn ? L"Windows Task Manager (Native C Win32)" : L"Gestionnaire des tâches Windows (C Win32 Natif)";
     case IDS_COL_NAME: return bEn ? L"Image Name" : L"Nom de l'image";
@@ -422,6 +439,10 @@ const WCHAR* GetResString(UINT uID) {
     case IDS_SETTINGS_LANG_AUTO: return bEn ? L"System (Auto - English fallback)" : L"Système (Auto - Anglais par défaut)";
     case IDS_SETTINGS_LANG_EN: return L"English";
     case IDS_SETTINGS_LANG_FR: return L"Français";
+    case IDS_SETTINGS_LANG_ES: return L"Español";
+    case IDS_SETTINGS_LANG_DE: return L"Deutsch";
+    case IDS_SETTINGS_LANG_IT: return L"Italiano";
+    case IDS_SETTINGS_LANG_PT: return L"Português";
     case IDS_SETTINGS_AUTOREFRESH: return bEn ? L"Auto-refresh (1 second)" : L"Rafraîchissement automatique (1 seconde)";
     case IDS_SETTINGS_HIDE_WINDOWS: return bEn ? L"Hide core Windows processes" : L"Masquer les processus Windows de base";
     case IDS_SETTINGS_ACTIVE_LANG_FMT: return bEn ? L"Active language: %s" : L"Langue active : %s";
@@ -432,7 +453,6 @@ const WCHAR* GetResString(UINT uID) {
     case IDS_ABOUT_VERSION_FMT: return L"Version %s (Build %d)";
     case IDS_ABOUT_COMPILE_FMT: return bEn ? L"Built on %s at %s" : L"Compilé le %s à %s";
     case IDS_ABOUT_TECH: return bEn ? L"Native Win32 API / NTAPI in pure C (MinGW-w64)" : L"Win32 API / NTAPI natif en C pur (MinGW-w64)";
-    case IDS_ABOUT_DESC: return bEn ? L"Flicker-free real-time process monitor with 1-hour history, dynamic tray icons, adaptive dark mode, and exclusion management." : L"Moniteur de processus temps réel sans scintillement avec historique 1h, icônes dynamiques dans la barre des tâches, mode sombre adaptatif et gestion des exclusions.";
     case IDS_BTN_CLOSE: return bEn ? L"Close" : L"Fermer";
     default: return L"";
     }
@@ -499,6 +519,14 @@ void LoadSettings(void) {
         g_nLanguageSetting = APP_LANG_FR;
     } else if (_wcsicmp(szLang, L"en") == 0) {
         g_nLanguageSetting = APP_LANG_EN;
+    } else if (_wcsicmp(szLang, L"es") == 0) {
+        g_nLanguageSetting = APP_LANG_ES;
+    } else if (_wcsicmp(szLang, L"de") == 0) {
+        g_nLanguageSetting = APP_LANG_DE;
+    } else if (_wcsicmp(szLang, L"it") == 0) {
+        g_nLanguageSetting = APP_LANG_IT;
+    } else if (_wcsicmp(szLang, L"pt") == 0) {
+        g_nLanguageSetting = APP_LANG_PT;
     } else {
         g_nLanguageSetting = APP_LANG_AUTO;
     }
@@ -529,8 +557,15 @@ void SaveSettings(void) {
     WritePrivateProfileStringW(L"Settings", L"HideWindowsProcesses", g_bHideWindowsProcesses ? L"1" : L"0", szIniPath);
 
     const WCHAR* szLangVal = L"auto";
-    if (g_nLanguageSetting == APP_LANG_FR) szLangVal = L"fr";
-    else if (g_nLanguageSetting == APP_LANG_EN) szLangVal = L"en";
+    switch (g_nLanguageSetting) {
+    case APP_LANG_FR: szLangVal = L"fr"; break;
+    case APP_LANG_EN: szLangVal = L"en"; break;
+    case APP_LANG_ES: szLangVal = L"es"; break;
+    case APP_LANG_DE: szLangVal = L"de"; break;
+    case APP_LANG_IT: szLangVal = L"it"; break;
+    case APP_LANG_PT: szLangVal = L"pt"; break;
+    default:          szLangVal = L"auto"; break;
+    }
     WritePrivateProfileStringW(L"Settings", L"Language", szLangVal, szIniPath);
 
     WCHAR szBuf[32];
@@ -2200,8 +2235,8 @@ void ApplyLanguageToUI(HWND hWnd) {
 // Utilitaire de positionnement des boutons alignés à droite dans la barre d'outils
 static void LayoutToolbarRightButtons(int clientWidth) {
     int rightMargin = 10;
-    int aboutW = 95;
-    int settingsW = 105;
+    int aboutW = 105;
+    int settingsW = 120;
     int gap = 6;
 
     int aboutX = clientWidth - rightMargin - aboutW;
@@ -2237,18 +2272,31 @@ static void UpdateActiveLangPreviewLabel(SettingsDlgState *pState) {
     if (!pState || !pState->hComboLang || !pState->hLblActiveLang) return;
     int sel = (int)SendMessageW(pState->hComboLang, CB_GETCURSEL, 0, 0);
     int resolved = APP_LANG_EN;
-    if (sel == APP_LANG_FR) {
-        resolved = APP_LANG_FR;
-    } else if (sel == APP_LANG_EN) {
-        resolved = APP_LANG_EN;
+    if (sel >= APP_LANG_EN && sel <= APP_LANG_PT) {
+        resolved = sel;
     } else {
         LANGID langId = GetUserDefaultUILanguage();
-        resolved = (PRIMARYLANGID(langId) == LANG_FRENCH) ? APP_LANG_FR : APP_LANG_EN;
+        switch (PRIMARYLANGID(langId)) {
+        case LANG_FRENCH:     resolved = APP_LANG_FR; break;
+        case LANG_SPANISH:    resolved = APP_LANG_ES; break;
+        case LANG_GERMAN:     resolved = APP_LANG_DE; break;
+        case LANG_ITALIAN:    resolved = APP_LANG_IT; break;
+        case LANG_PORTUGUESE: resolved = APP_LANG_PT; break;
+        default:              resolved = APP_LANG_EN; break;
+        }
     }
 
-    const WCHAR *szLangName = (resolved == APP_LANG_FR) ? GetResString(IDS_SETTINGS_LANG_FR) : GetResString(IDS_SETTINGS_LANG_EN);
+    UINT langNameId = IDS_SETTINGS_LANG_EN;
+    switch (resolved) {
+    case APP_LANG_FR: langNameId = IDS_SETTINGS_LANG_FR; break;
+    case APP_LANG_ES: langNameId = IDS_SETTINGS_LANG_ES; break;
+    case APP_LANG_DE: langNameId = IDS_SETTINGS_LANG_DE; break;
+    case APP_LANG_IT: langNameId = IDS_SETTINGS_LANG_IT; break;
+    case APP_LANG_PT: langNameId = IDS_SETTINGS_LANG_PT; break;
+    default:          langNameId = IDS_SETTINGS_LANG_EN; break;
+    }
     WCHAR szBuf[128];
-    swprintf_s(szBuf, sizeof(szBuf) / sizeof(WCHAR), GetResString(IDS_SETTINGS_ACTIVE_LANG_FMT), szLangName);
+    swprintf_s(szBuf, sizeof(szBuf) / sizeof(WCHAR), GetResString(IDS_SETTINGS_ACTIVE_LANG_FMT), GetResString(langNameId));
     SetWindowTextW(pState->hLblActiveLang, szBuf);
 }
 
@@ -2282,13 +2330,17 @@ static LRESULT CALLBACK SettingsWndProc(HWND hDlg, UINT message, WPARAM wParam, 
         pState->hComboLang = CreateWindowExW(
             0, L"COMBOBOX", L"",
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
-            20, 44, 360, 120,
+            20, 44, 360, 200,
             hDlg, (HMENU)IDC_SET_COMBO_LANG, hInst, NULL
         );
         SendMessageW(pState->hComboLang, WM_SETFONT, (WPARAM)hFont, TRUE);
         SendMessageW(pState->hComboLang, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_LANG_AUTO));
         SendMessageW(pState->hComboLang, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_LANG_EN));
         SendMessageW(pState->hComboLang, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_LANG_FR));
+        SendMessageW(pState->hComboLang, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_LANG_ES));
+        SendMessageW(pState->hComboLang, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_LANG_DE));
+        SendMessageW(pState->hComboLang, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_LANG_IT));
+        SendMessageW(pState->hComboLang, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_LANG_PT));
         SendMessageW(pState->hComboLang, CB_SETCURSEL, (WPARAM)g_nLanguageSetting, 0);
 
         // Indication de la langue active résolue
@@ -2370,7 +2422,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hDlg, UINT message, WPARAM wParam, 
         if (id == IDOK) {
             if (pState) {
                 int selLang = (int)SendMessageW(pState->hComboLang, CB_GETCURSEL, 0, 0);
-                if (selLang >= APP_LANG_AUTO && selLang <= APP_LANG_FR) {
+                if (selLang >= APP_LANG_AUTO && selLang <= APP_LANG_PT) {
                     g_nLanguageSetting = selLang;
                 }
 
@@ -2612,20 +2664,11 @@ static LRESULT CALLBACK AboutWndProc(HWND hDlg, UINT message, WPARAM wParam, LPA
         );
         SendMessageW(hLblTech, WM_SETFONT, (WPARAM)hFont, TRUE);
 
-        // Description
-        HWND hLblDesc = CreateWindowExW(
-            0, L"STATIC", GetResString(IDS_ABOUT_DESC),
-            WS_CHILD | WS_VISIBLE | SS_LEFT,
-            20, 124, 404, 58,
-            hDlg, NULL, hInst, NULL
-        );
-        SendMessageW(hLblDesc, WM_SETFONT, (WPARAM)hFont, TRUE);
-
         // Bouton Fermer
         pState->hBtnClose = CreateWindowExW(
             0, L"BUTTON", GetResString(IDS_BTN_CLOSE),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            324, 198, 100, 28,
+            324, 136, 100, 28,
             hDlg, (HMENU)IDOK, hInst, NULL
         );
         SendMessageW(pState->hBtnClose, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -2714,7 +2757,7 @@ void ShowAboutDialog(HWND hParent) {
     state.hParent = hParent;
 
     int dlgW = 458;
-    int dlgH = 278;
+    int dlgH = 214;
     RECT rcParent;
     GetWindowRect(hParent, &rcParent);
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
@@ -3003,7 +3046,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         g_hBtnSettings = CreateWindowExW(
             0, L"BUTTON", GetResString(IDS_BTN_SETTINGS),
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            1025, 10, 105, 28,
+            1003, 10, 120, 28,
             hWnd, (HMENU)IDC_BTN_SETTINGS, GetModuleHandle(NULL), NULL
         );
         SendMessage(g_hBtnSettings, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -3011,7 +3054,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         g_hBtnAbout = CreateWindowExW(
             0, L"BUTTON", GetResString(IDS_BTN_ABOUT),
             WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-            1136, 10, 95, 28,
+            1129, 10, 105, 28,
             hWnd, (HMENU)IDC_BTN_ABOUT, GetModuleHandle(NULL), NULL
         );
         SendMessage(g_hBtnAbout, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -3114,9 +3157,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
     case WM_TRAYICON: {
         UINT uTrayId = (UINT)wParam;
-        // Double-clic gauche sur n'importe laquelle des 3 icônes pour réafficher l'application
-        if (lParam == WM_LBUTTONDBLCLK) {
-            ShowWindow(hWnd, SW_RESTORE);
+        // Simple clic (ou double-clic) gauche sur n'importe laquelle des 3 icônes pour réafficher l'application
+        if (lParam == WM_LBUTTONUP || lParam == WM_LBUTTONDBLCLK) {
+            if (IsIconic(hWnd)) {
+                ShowWindow(hWnd, SW_RESTORE);
+            } else {
+                ShowWindow(hWnd, SW_SHOW);
+            }
             SetForegroundWindow(hWnd);
             g_bInTray = FALSE;
         } else if (lParam == WM_RBUTTONUP) {
@@ -3155,7 +3202,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
         switch (controlId) {
         case IDM_TRAY_OPEN:
-            ShowWindow(hWnd, SW_RESTORE);
+            if (IsIconic(hWnd)) {
+                ShowWindow(hWnd, SW_RESTORE);
+            } else {
+                ShowWindow(hWnd, SW_SHOW);
+            }
             SetForegroundWindow(hWnd);
             g_bInTray = FALSE;
             break;

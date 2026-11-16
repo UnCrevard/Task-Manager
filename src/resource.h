@@ -13,9 +13,17 @@
 #define RT_MANIFEST                     24
 #endif
 
-// Décalage pour les chaînes anglaises dans la STRINGTABLE (FR: 5000+, EN: 6000+)
+// Décalage pour les langues dans la STRINGTABLE (FR: 5000+, EN: 6000+, ES: 7000+, DE: 8000+, IT: 9000+, PT: 10000+)
 #define IDS_EN_OFFSET                   1000
+#define IDS_ES_OFFSET                   2000
+#define IDS_DE_OFFSET                   3000
+#define IDS_IT_OFFSET                   4000
+#define IDS_PT_OFFSET                   5000
 #define EN_ID(id)                       ((id) + IDS_EN_OFFSET)
+#define ES_ID(id)                       ((id) + IDS_ES_OFFSET)
+#define DE_ID(id)                       ((id) + IDS_DE_OFFSET)
+#define IT_ID(id)                       ((id) + IDS_IT_OFFSET)
+#define PT_ID(id)                       ((id) + IDS_PT_OFFSET)
 
 // --- Identifiants de la table des chaînes (STRINGTABLE) ---
 
@@ -121,6 +129,10 @@
 #define IDS_SETTINGS_ACTIVE_LANG_FMT    5117
 #define IDS_BTN_OK                      5118
 #define IDS_BTN_CANCEL                  5119
+#define IDS_SETTINGS_LANG_ES            5120
+#define IDS_SETTINGS_LANG_DE            5121
+#define IDS_SETTINGS_LANG_IT            5122
+#define IDS_SETTINGS_LANG_PT            5123
 
 // Fenêtre À propos (About)
 #define IDS_ABOUT_TITLE                 5130
@@ -128,7 +140,6 @@
 #define IDS_ABOUT_VERSION_FMT           5132
 #define IDS_ABOUT_COMPILE_FMT           5133
 #define IDS_ABOUT_TECH                  5134
-#define IDS_ABOUT_DESC                  5135
 #define IDS_BTN_CLOSE                   5136
 
 #endif // RESOURCE_H

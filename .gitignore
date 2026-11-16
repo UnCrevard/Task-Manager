@@ -1,5 +1,5 @@
 .aistudio/
-.env.exemple
+.env.example
 index.html
 metadata.json
 package.json

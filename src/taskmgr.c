@@ -18,7 +18,7 @@
  * - Persistance automatique de tous les réglages et processus exclus dans settings.ini
  * - Toggle pour masquer / afficher les processus système de base de Windows (via signature & chemin)
  * - Moteur différentiel SANS scintillement (in-place update anti-flicker double-buffered)
- * - Métriques complètes : CPU %, GPU estimé, Mémoire (Mo), CLI Args, PID, Disque & Réseau
+ * - Métriques complètes : CPU %, GPU % réel (PDH WDDM), Mémoire (Mo), CLI Args, PID, Disque & Réseau
  * - Changement de priorité (Temps réel, Haute, Supérieure, Normale, Inférieure, Basse)
  * - Terminaison brutale immédiate sans confirmation via TerminateProcess(hProcess, 1)
  * - Statistiques système globales en temps réel (CPU global, RAM, Processus, I/O)
@@ -39,6 +39,8 @@
 #include <tlhelp32.h>
 #include <psapi.h>
 #include <winternl.h>
+#include <pdh.h>
+#include <pdhmsg.h>
 #include <wctype.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -232,6 +234,54 @@ static double g_LastGpuPct = 0.0;
 static double g_LastUsedRamGb = 0.0;
 static double g_LastTotalRamGb = 0.0;
 
+// Télémétrie GPU réelle via PDH ("\GPU Engine(*)\Utilization Percentage", WDDM 2.0+)
+typedef PDH_STATUS (WINAPI *pfnPdhOpenQueryW)(LPCWSTR, DWORD_PTR, PDH_HQUERY*);
+typedef PDH_STATUS (WINAPI *pfnPdhAddEnglishCounterW)(PDH_HQUERY, LPCWSTR, DWORD_PTR, PDH_HCOUNTER*);
+typedef PDH_STATUS (WINAPI *pfnPdhCollectQueryData)(PDH_HQUERY);
+typedef PDH_STATUS (WINAPI *pfnPdhGetFormattedCounterArrayW)(PDH_HCOUNTER, DWORD, LPDWORD, LPDWORD, PPDH_FMT_COUNTERVALUE_ITEM_W);
+typedef PDH_STATUS (WINAPI *pfnPdhCloseQuery)(PDH_HQUERY);
+
+typedef struct {
+    DWORD pid;
+    double gpuPercent;
+} GpuProcSample;
+
+typedef struct {
+    WCHAR szEngineKey[64];
+    double totalPercent;
+} GpuEngineTotal;
+
+typedef struct {
+    DWORD pid;
+    int engineIdx;
+    double percent;
+} GpuProcEnginePair;
+
+#define MAX_GPU_ENGINES 256
+#define MAX_GPU_PROC_SAMPLES MAX_HISTORY_PROCESSES
+#define MAX_GPU_PROC_ENGINE_PAIRS 2048
+#define GPU_SAMPLE_MIN_INTERVAL_MS 750
+
+static HMODULE g_hPdhDll = NULL;
+static pfnPdhOpenQueryW g_pfnPdhOpenQueryW = NULL;
+static pfnPdhAddEnglishCounterW g_pfnPdhAddEnglishCounterW = NULL;
+static pfnPdhCollectQueryData g_pfnPdhCollectQueryData = NULL;
+static pfnPdhGetFormattedCounterArrayW g_pfnPdhGetFormattedCounterArrayW = NULL;
+static pfnPdhCloseQuery g_pfnPdhCloseQuery = NULL;
+
+static PDH_HQUERY g_hGpuQuery = NULL;
+static PDH_HCOUNTER g_hGpuCounter = NULL;
+static BOOL g_bGpuPdhReady = FALSE;
+static BOOL g_bGpuBaselineCollected = FALSE;
+static ULONGLONG g_LastGpuCollectTick = 0;
+
+static BYTE *g_pGpuPdhBuf = NULL;
+static DWORD g_GpuPdhBufCap = 0;
+
+static GpuProcSample g_CachedGpuProcs[MAX_GPU_PROC_SAMPLES];
+static int g_CachedGpuProcCount = 0;
+static double g_CachedTotalGpuPct = 0.0;
+
 static BOOL g_bInTray = FALSE;
 static BOOL g_bTrayCpuCreated = FALSE;
 static BOOL g_bTrayRamCreated = FALSE;
@@ -314,6 +364,12 @@ HICON CreateHistoryGraphIcon(const double *history, int count, DWORD baseColor, 
 void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb);
 void RecreateTrayIcons(BOOL bResetCreatedFlags);
 void RemoveAllTrayIcons(void);
+
+// Télémétrie GPU réelle via PDH ("\GPU Engine(*)\Utilization Percentage")
+void InitGpuTelemetry(void);
+void ShutdownGpuTelemetry(void);
+void CollectGpuTelemetry(ULONGLONG curTick);
+double LookupCachedGpuPercent(DWORD pid);
 
 // ============================================================================
 // Centralisation des chaînes de caractères (Chargement depuis resource.rc)
@@ -2899,6 +2955,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
 
+    InitGpuTelemetry();
     RefreshProcessList();
 
     if (g_bAutoRefresh) {
@@ -3595,6 +3652,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             g_hSingleInstanceMutex = NULL;
         }
         SaveSettings();
+        ShutdownGpuTelemetry();
         KillTimer(hWnd, IDT_TRAY_RETRY_TIMER);
         if (g_bAutoRefresh) {
             KillTimer(hWnd, IDT_REFRESH_TIMER);
@@ -3823,6 +3881,257 @@ void UpdateStatusBar(int displayedCount, int totalCount, double totalCpu) {
     }
 }
 
+// ============================================================================
+// Télémétrie GPU réelle via PDH ("\GPU Engine(*)\Utilization Percentage")
+// ============================================================================
+static BOOL ParseGpuEngineInstanceName(const WCHAR *szName, DWORD *pOutPid, WCHAR *szEngineKey, size_t cchKey) {
+    if (!szName || !pOutPid || !szEngineKey || cchKey == 0) return FALSE;
+    szEngineKey[0] = L'\0';
+
+    const WCHAR *pPid = wcsstr(szName, L"pid_");
+    if (!pPid) return FALSE;
+
+    WCHAR *pEnd = NULL;
+    unsigned long pidVal = wcstoul(pPid + 4, &pEnd, 10);
+    if (!pEnd || pEnd == pPid + 4) return FALSE;
+    *pOutPid = (DWORD)pidVal;
+
+    const WCHAR *pLuid = wcsstr(pEnd, L"luid_");
+    const WCHAR *pStart = pLuid ? pLuid : ((*pEnd == L'_') ? (pEnd + 1) : pEnd);
+    const WCHAR *pEngType = wcsstr(pStart, L"_engtype_");
+
+    size_t len = pEngType ? (size_t)(pEngType - pStart) : wcslen(pStart);
+    if (len == 0) {
+        wcsncpy_s(szEngineKey, cchKey, L"default", _TRUNCATE);
+    } else {
+        if (len >= cchKey) len = cchKey - 1;
+        memcpy(szEngineKey, pStart, len * sizeof(WCHAR));
+        szEngineKey[len] = L'\0';
+    }
+    return TRUE;
+}
+
+void InitGpuTelemetry(void) {
+    if (g_bGpuPdhReady) return;
+
+    g_hPdhDll = LoadLibraryW(L"pdh.dll");
+    if (!g_hPdhDll) return;
+
+    g_pfnPdhOpenQueryW = (pfnPdhOpenQueryW)(void*)GetProcAddress(g_hPdhDll, "PdhOpenQueryW");
+    g_pfnPdhAddEnglishCounterW = (pfnPdhAddEnglishCounterW)(void*)GetProcAddress(g_hPdhDll, "PdhAddEnglishCounterW");
+    g_pfnPdhCollectQueryData = (pfnPdhCollectQueryData)(void*)GetProcAddress(g_hPdhDll, "PdhCollectQueryData");
+    g_pfnPdhGetFormattedCounterArrayW = (pfnPdhGetFormattedCounterArrayW)(void*)GetProcAddress(g_hPdhDll, "PdhGetFormattedCounterArrayW");
+    g_pfnPdhCloseQuery = (pfnPdhCloseQuery)(void*)GetProcAddress(g_hPdhDll, "PdhCloseQuery");
+
+    if (!g_pfnPdhOpenQueryW || !g_pfnPdhAddEnglishCounterW || !g_pfnPdhCollectQueryData ||
+        !g_pfnPdhGetFormattedCounterArrayW || !g_pfnPdhCloseQuery) {
+        ShutdownGpuTelemetry();
+        return;
+    }
+
+    if (g_pfnPdhOpenQueryW(NULL, 0, &g_hGpuQuery) != ERROR_SUCCESS || !g_hGpuQuery) {
+        ShutdownGpuTelemetry();
+        return;
+    }
+
+    if (g_pfnPdhAddEnglishCounterW(g_hGpuQuery, L"\\GPU Engine(*)\\Utilization Percentage", 0, &g_hGpuCounter) != ERROR_SUCCESS || !g_hGpuCounter) {
+        ShutdownGpuTelemetry();
+        return;
+    }
+
+    g_bGpuPdhReady = TRUE;
+    // Premier échantillon de référence (les compteurs de taux PDH exigent 2 collectes)
+    if (g_pfnPdhCollectQueryData(g_hGpuQuery) == ERROR_SUCCESS) {
+        g_bGpuBaselineCollected = TRUE;
+        g_LastGpuCollectTick = GetTickCount64();
+    }
+}
+
+void ShutdownGpuTelemetry(void) {
+    if (g_hGpuQuery && g_pfnPdhCloseQuery) {
+        g_pfnPdhCloseQuery(g_hGpuQuery);
+    }
+    g_hGpuQuery = NULL;
+    g_hGpuCounter = NULL;
+    g_bGpuPdhReady = FALSE;
+    g_bGpuBaselineCollected = FALSE;
+
+    if (g_pGpuPdhBuf) {
+        free(g_pGpuPdhBuf);
+        g_pGpuPdhBuf = NULL;
+        g_GpuPdhBufCap = 0;
+    }
+    if (g_hPdhDll) {
+        FreeLibrary(g_hPdhDll);
+        g_hPdhDll = NULL;
+    }
+    g_pfnPdhOpenQueryW = NULL;
+    g_pfnPdhAddEnglishCounterW = NULL;
+    g_pfnPdhCollectQueryData = NULL;
+    g_pfnPdhGetFormattedCounterArrayW = NULL;
+    g_pfnPdhCloseQuery = NULL;
+}
+
+void CollectGpuTelemetry(ULONGLONG curTick) {
+    if (!g_bGpuPdhReady || !g_hGpuQuery || !g_hGpuCounter) {
+        g_CachedGpuProcCount = 0;
+        g_CachedTotalGpuPct = 0.0;
+        return;
+    }
+
+    // Éviter de rééchantillonner à <750ms lors des frappes rapides dans le filtre
+    if (g_bGpuBaselineCollected && g_LastGpuCollectTick > 0 &&
+        curTick >= g_LastGpuCollectTick &&
+        (curTick - g_LastGpuCollectTick) < GPU_SAMPLE_MIN_INTERVAL_MS) {
+        return;
+    }
+
+    if (g_pfnPdhCollectQueryData(g_hGpuQuery) != ERROR_SUCCESS) {
+        return;
+    }
+    g_LastGpuCollectTick = curTick;
+
+    if (!g_bGpuBaselineCollected) {
+        g_bGpuBaselineCollected = TRUE;
+        g_CachedGpuProcCount = 0;
+        g_CachedTotalGpuPct = 0.0;
+        return;
+    }
+
+    DWORD bufSize = 0;
+    DWORD itemCount = 0;
+    PDH_STATUS status = g_pfnPdhGetFormattedCounterArrayW(g_hGpuCounter, PDH_FMT_DOUBLE, &bufSize, &itemCount, NULL);
+
+    int attempts = 0;
+    while ((DWORD)status == PDH_MORE_DATA && bufSize > 0 && attempts < 3) {
+        attempts++;
+        if (bufSize > g_GpuPdhBufCap) {
+            BYTE *pNew = (BYTE*)realloc(g_pGpuPdhBuf, bufSize);
+            if (!pNew) return;
+            g_pGpuPdhBuf = pNew;
+            g_GpuPdhBufCap = bufSize;
+        }
+        itemCount = 0;
+        status = g_pfnPdhGetFormattedCounterArrayW(
+            g_hGpuCounter,
+            PDH_FMT_DOUBLE,
+            &bufSize,
+            &itemCount,
+            (PPDH_FMT_COUNTERVALUE_ITEM_W)g_pGpuPdhBuf
+        );
+    }
+
+    if (status != ERROR_SUCCESS || itemCount == 0 || !g_pGpuPdhBuf) {
+        g_CachedGpuProcCount = 0;
+        g_CachedTotalGpuPct = 0.0;
+        return;
+    }
+
+    GpuEngineTotal engines[MAX_GPU_ENGINES];
+    int engineCount = 0;
+
+    GpuProcEnginePair *pairs = (GpuProcEnginePair*)calloc(MAX_GPU_PROC_ENGINE_PAIRS, sizeof(GpuProcEnginePair));
+    if (!pairs) return;
+    int pairCount = 0;
+
+    PPDH_FMT_COUNTERVALUE_ITEM_W items = (PPDH_FMT_COUNTERVALUE_ITEM_W)g_pGpuPdhBuf;
+    for (DWORD i = 0; i < itemCount; i++) {
+        DWORD cstat = items[i].FmtValue.CStatus;
+        if (cstat != PDH_CSTATUS_VALID_DATA && cstat != PDH_CSTATUS_NEW_DATA) {
+            continue;
+        }
+
+        double val = items[i].FmtValue.doubleValue;
+        if (isnan(val) || isinf(val) || val <= 0.0) continue;
+        if (val > 100.0) val = 100.0;
+
+        DWORD pid = 0;
+        WCHAR szEngineKey[64];
+        if (!ParseGpuEngineInstanceName(items[i].szName, &pid, szEngineKey, 64)) {
+            continue;
+        }
+
+        // Trouver ou créer le moteur matériel (luid + phys + eng)
+        int eIdx = -1;
+        for (int e = 0; e < engineCount; e++) {
+            if (wcscmp(engines[e].szEngineKey, szEngineKey) == 0) {
+                eIdx = e;
+                break;
+            }
+        }
+        if (eIdx < 0) {
+            if (engineCount >= MAX_GPU_ENGINES) continue;
+            eIdx = engineCount++;
+            wcsncpy_s(engines[eIdx].szEngineKey, 64, szEngineKey, _TRUNCATE);
+            engines[eIdx].totalPercent = 0.0;
+        }
+        engines[eIdx].totalPercent += val;
+
+        // Cumuler par couple (PID, moteur)
+        int pIdx = -1;
+        for (int p = 0; p < pairCount; p++) {
+            if (pairs[p].pid == pid && pairs[p].engineIdx == eIdx) {
+                pIdx = p;
+                break;
+            }
+        }
+        if (pIdx < 0) {
+            if (pairCount < MAX_GPU_PROC_ENGINE_PAIRS) {
+                pairs[pairCount].pid = pid;
+                pairs[pairCount].engineIdx = eIdx;
+                pairs[pairCount].percent = val;
+                pairCount++;
+            }
+        } else {
+            pairs[pIdx].percent += val;
+        }
+    }
+
+    // Chaque processus affiche le maximum de ses moteurs GPU utilisés (comportement natif Windows)
+    g_CachedGpuProcCount = 0;
+    for (int p = 0; p < pairCount; p++) {
+        double pVal = pairs[p].percent;
+        if (pVal > 100.0) pVal = 100.0;
+
+        int found = -1;
+        for (int c = 0; c < g_CachedGpuProcCount; c++) {
+            if (g_CachedGpuProcs[c].pid == pairs[p].pid) {
+                found = c;
+                break;
+            }
+        }
+        if (found < 0) {
+            if (g_CachedGpuProcCount < MAX_GPU_PROC_SAMPLES) {
+                g_CachedGpuProcs[g_CachedGpuProcCount].pid = pairs[p].pid;
+                g_CachedGpuProcs[g_CachedGpuProcCount].gpuPercent = pVal;
+                g_CachedGpuProcCount++;
+            }
+        } else if (pVal > g_CachedGpuProcs[found].gpuPercent) {
+            g_CachedGpuProcs[found].gpuPercent = pVal;
+        }
+    }
+
+    // Utilisation GPU globale = maximum parmi tous les moteurs GPU matériels (plafonné à 100%)
+    double maxEngine = 0.0;
+    for (int e = 0; e < engineCount; e++) {
+        double eVal = engines[e].totalPercent;
+        if (eVal > 100.0) eVal = 100.0;
+        if (eVal > maxEngine) maxEngine = eVal;
+    }
+    g_CachedTotalGpuPct = maxEngine;
+
+    free(pairs);
+}
+
+double LookupCachedGpuPercent(DWORD pid) {
+    for (int i = 0; i < g_CachedGpuProcCount; i++) {
+        if (g_CachedGpuProcs[i].pid == pid) {
+            return g_CachedGpuProcs[i].gpuPercent;
+        }
+    }
+    return 0.0;
+}
+
 // Rafraîchissement différentiel optimisé SANS scintillement
 void RefreshProcessList(void) {
     FILETIME idleTime, kernelTime, userTime;
@@ -3853,6 +4162,8 @@ void RefreshProcessList(void) {
         ((double)(curTick - g_LastRefreshTime) / 1000.0) : 1.0;
     if (timeDeltaSec <= 0.0) timeDeltaSec = 1.0;
     g_LastRefreshTime = curTick;
+
+    CollectGpuTelemetry(curTick);
 
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot == INVALID_HANDLE_VALUE) {
@@ -3952,14 +4263,6 @@ void RefreshProcessList(void) {
                 }
             }
 
-            // GPU estimé
-            DWORD gdiObjects = GetGuiResources(hProcess, GR_GDIOBJECTS);
-            DWORD userObjects = GetGuiResources(hProcess, GR_USEROBJECTS);
-            if (gdiObjects > 0 || userObjects > 0) {
-                proc->gpuPercent = (proc->cpuPercent * 0.45);
-                if (proc->gpuPercent > 99.0) proc->gpuPercent = 99.0;
-            }
-
             proc->priorityClass = GetPriorityClass(hProcess);
             GetProcessCommandLine(hProcess, proc->szCmdLine, sizeof(proc->szCmdLine) / sizeof(WCHAR));
 
@@ -3967,6 +4270,9 @@ void RefreshProcessList(void) {
         } else {
             wcsncpy_s(proc->szCmdLine, 1024, GetResString(IDS_STR_RESTRICTED), _TRUNCATE);
         }
+
+        // GPU % réel (issu des compteurs WDDM PDH, indépendant des droits OpenProcess)
+        proc->gpuPercent = LookupCachedGpuPercent(pid);
 
         // Détection de processus Windows de base
         proc->isWindowsBase = IsWindowsBaseProcess(pid, proc->szName, proc->szFullPath);
@@ -3979,11 +4285,9 @@ void RefreshProcessList(void) {
     CloseHandle(hSnapshot);
     PruneHistory(activePids, activeCount);
 
-    // Calcul du GPU global et de la RAM pour l'icône Tray
-    double totalGpuPercent = 0.0;
-    for (int i = 0; i < g_ProcessCount; i++) {
-        totalGpuPercent += g_Processes[i].gpuPercent;
-    }
+    // GPU global réel : utilisation maximale parmi les moteurs matériels actifs (conforme au Gestionnaire Windows)
+    double totalGpuPercent = g_CachedTotalGpuPct;
+    if (totalGpuPercent < 0.0) totalGpuPercent = 0.0;
     if (totalGpuPercent > 100.0) totalGpuPercent = 100.0;
 
     MEMORYSTATUSEX memStatus;
@@ -4018,7 +4322,7 @@ void RefreshProcessList(void) {
             top1Ram.pid = g_Processes[i].pid;
             wcsncpy_s(top1Ram.szName, 32, g_Processes[i].szName, _TRUNCATE);
         }
-        if (g_Processes[i].gpuPercent > top1Gpu.value) {
+        if (g_Processes[i].gpuPercent > 0.0 && g_Processes[i].gpuPercent > top1Gpu.value) {
             top1Gpu.value = g_Processes[i].gpuPercent;
             top1Gpu.pid = g_Processes[i].pid;
             wcsncpy_s(top1Gpu.szName, 32, g_Processes[i].szName, _TRUNCATE);

@@ -1,0 +1,11 @@
+{
+  "files.exclude": {
+    "**/.aistudio": true,
+    "**/*.json": true,
+    "**/src": true,
+    "**/dist": true,
+    "**/build": true,
+    "**/*.ts":true,
+    "**/index.html": true,
+  }
+}

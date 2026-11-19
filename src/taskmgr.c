@@ -309,6 +309,12 @@ static HWND g_hStaticSearch = NULL;
 static HWND g_hEditSearch = NULL;
 static HWND g_hBtnSettings = NULL;
 static HWND g_hBtnAbout = NULL;
+static HWND g_hListTooltip = NULL;
+static int g_TipHoverItem = -1;
+static int g_TipHoverSubItem = -1;
+static WCHAR g_szListTipText[2048] = { 0 };
+static BOOL g_bListMouseTracking = FALSE;
+static int g_LastAutoCmdWidth = 320;
 static WCHAR g_szSearchFilter[128] = { 0 };
 static HFONT g_hFont = NULL;
 static HFONT g_hFontBold = NULL;
@@ -2066,13 +2072,125 @@ static LRESULT CALLBACK HeaderSubclassProc(
     return DefSubclassProc(hWnd, uMsg, wParam, lParam);
 }
 
-// Subclass de la ListView (SysListView32) pour le rendu personnalisé moderne des colonnes (en-tête) en mode sombre
+// Vérifie si le texte d'une cellule dépasse la largeur visible de sa colonne
+static BOOL IsListCellTruncated(HWND hListView, int iItem, int iSubItem, WCHAR *pszOut, int cchOut) {
+    if (!hListView || iItem < 0 || iSubItem < 0 || iSubItem >= COL_COUNT || !pszOut || cchOut <= 0) {
+        return FALSE;
+    }
+    pszOut[0] = L'\0';
+    ListView_GetItemText(hListView, iItem, iSubItem, pszOut, cchOut);
+    if (pszOut[0] == L'\0') return FALSE;
+
+    RECT rcSub = { 0 };
+    if (!ListView_GetSubItemRect(hListView, iItem, iSubItem, LVIR_LABEL, &rcSub)) {
+        return FALSE;
+    }
+
+    RECT rcClient = { 0 };
+    GetClientRect(hListView, &rcClient);
+
+    int colW = ListView_GetColumnWidth(hListView, iSubItem);
+    int subW = rcSub.right - rcSub.left;
+    int cellW = (colW > 0 && (subW <= 0 || colW < subW)) ? colW : subW;
+
+    int visLeft = (rcSub.left > rcClient.left) ? rcSub.left : rcClient.left;
+    int visRight = (rcSub.right < rcClient.right) ? rcSub.right : rcClient.right;
+    int visW = visRight - visLeft;
+    if (visW < cellW) cellW = visW;
+
+    int pad = (iSubItem == 0) ? 10 : 14;
+    int availW = cellW - pad;
+    if (availW <= 0) return TRUE;
+
+    HDC hdc = GetDC(hListView);
+    if (!hdc) return FALSE;
+    HFONT hFontUse = g_hFont ? g_hFont : (HFONT)SendMessageW(hListView, WM_GETFONT, 0, 0);
+    HFONT hOldFont = hFontUse ? (HFONT)SelectObject(hdc, hFontUse) : NULL;
+
+    SIZE textSz = { 0, 0 };
+    GetTextExtentPoint32W(hdc, pszOut, (int)wcslen(pszOut), &textSz);
+
+    if (hOldFont) SelectObject(hdc, hOldFont);
+    ReleaseDC(hListView, hdc);
+
+    return (textSz.cx > availW);
+}
+
+static void RelayListTooltipMouseMsg(HWND hListView, UINT uMsg, WPARAM wParam, LPARAM lParam) {
+    if (!g_hListTooltip) return;
+    MSG msg = { 0 };
+    msg.hwnd = hListView;
+    msg.message = uMsg;
+    msg.wParam = wParam;
+    msg.lParam = lParam;
+    msg.time = GetMessageTime();
+    GetCursorPos(&msg.pt);
+    SendMessageW(g_hListTooltip, TTM_RELAYEVENT, 0, (LPARAM)&msg);
+}
+
+// Subclass de la ListView (SysListView32) pour le rendu des en-têtes et infobulles de cellules tronquées
 static LRESULT CALLBACK ListViewSubclassProc(
     HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam,
     UINT_PTR uIdSubclass, DWORD_PTR dwRefData)
 {
     (void)uIdSubclass;
     (void)dwRefData;
+
+    if (uMsg == WM_MOUSEMOVE) {
+        if (!g_bListMouseTracking) {
+            TRACKMOUSEEVENT tme = { sizeof(TRACKMOUSEEVENT), TME_LEAVE, hWnd, 0 };
+            TrackMouseEvent(&tme);
+            g_bListMouseTracking = TRUE;
+        }
+
+        if (g_hListTooltip) {
+            LVHITTESTINFO ht = { 0 };
+            ht.pt.x = (int)(short)LOWORD(lParam);
+            ht.pt.y = (int)(short)HIWORD(lParam);
+            ListView_SubItemHitTest(hWnd, &ht);
+
+            if (ht.iItem >= 0 && ht.iSubItem >= 0 && ht.iSubItem < COL_COUNT) {
+                if (ht.iItem != g_TipHoverItem || ht.iSubItem != g_TipHoverSubItem) {
+                    g_TipHoverItem = ht.iItem;
+                    g_TipHoverSubItem = ht.iSubItem;
+
+                    WCHAR szCell[2048] = { 0 };
+                    if (IsListCellTruncated(hWnd, ht.iItem, ht.iSubItem, szCell, 2048)) {
+                        wcsncpy_s(g_szListTipText, 2048, szCell, _TRUNCATE);
+                        SendMessageW(g_hListTooltip, TTM_POP, 0, 0);
+                        SendMessageW(g_hListTooltip, TTM_ACTIVATE, TRUE, 0);
+                    } else {
+                        g_szListTipText[0] = L'\0';
+                        SendMessageW(g_hListTooltip, TTM_POP, 0, 0);
+                        SendMessageW(g_hListTooltip, TTM_ACTIVATE, FALSE, 0);
+                    }
+                }
+            } else if (g_TipHoverItem != -1 || g_TipHoverSubItem != -1) {
+                g_TipHoverItem = -1;
+                g_TipHoverSubItem = -1;
+                g_szListTipText[0] = L'\0';
+                SendMessageW(g_hListTooltip, TTM_POP, 0, 0);
+                SendMessageW(g_hListTooltip, TTM_ACTIVATE, FALSE, 0);
+            }
+
+            if (g_szListTipText[0] != L'\0') {
+                RelayListTooltipMouseMsg(hWnd, uMsg, wParam, lParam);
+            }
+        }
+    } else if (uMsg == WM_LBUTTONDOWN || uMsg == WM_RBUTTONDOWN || uMsg == WM_MBUTTONDOWN || uMsg == WM_MOUSEWHEEL) {
+        if (g_hListTooltip) {
+            SendMessageW(g_hListTooltip, TTM_POP, 0, 0);
+        }
+    } else if (uMsg == WM_MOUSELEAVE) {
+        g_bListMouseTracking = FALSE;
+        g_TipHoverItem = -1;
+        g_TipHoverSubItem = -1;
+        g_szListTipText[0] = L'\0';
+        if (g_hListTooltip) {
+            SendMessageW(g_hListTooltip, TTM_POP, 0, 0);
+            SendMessageW(g_hListTooltip, TTM_ACTIVATE, FALSE, 0);
+        }
+    }
 
     if (uMsg == WM_NOTIFY) {
         LPNMHDR lpnm = (LPNMHDR)lParam;
@@ -2096,10 +2214,12 @@ static LRESULT CALLBACK ListViewSubclassProc(
                     }
                     FillRect(pnmcd->hdc, &rc, hBr);
 
-                    // Trait vertical de séparation entre colonnes
+                    // Trait vertical de séparation entre colonnes (aucun trait après la dernière colonne)
                     HPEN hOldPen = (HPEN)SelectObject(pnmcd->hdc, g_hDarkBorderPen);
-                    MoveToEx(pnmcd->hdc, rc.right - 1, rc.top + 3, NULL);
-                    LineTo(pnmcd->hdc, rc.right - 1, rc.bottom - 3);
+                    if (iCol < COL_COUNT - 1) {
+                        MoveToEx(pnmcd->hdc, rc.right - 1, rc.top + 3, NULL);
+                        LineTo(pnmcd->hdc, rc.right - 1, rc.bottom - 3);
+                    }
 
                     // Trait inférieur de séparation avec la liste
                     MoveToEx(pnmcd->hdc, rc.left, rc.bottom - 1, NULL);
@@ -2240,6 +2360,12 @@ static void ApplyModernWindowsTheme(HWND hWnd, HWND hListView) {
 
             if (g_hEditSearch) {
                 pSetWindowTheme(g_hEditSearch, g_bDarkModeActive ? L"DarkMode_CFD" : L"Explorer", NULL);
+            }
+            if (g_hListTooltip) {
+                if (g_pfnAllowDarkModeForWindow) {
+                    g_pfnAllowDarkModeForWindow(g_hListTooltip, g_bDarkModeActive);
+                }
+                pSetWindowTheme(g_hListTooltip, g_bDarkModeActive ? L"DarkMode_Explorer" : L"Explorer", NULL);
             }
         }
         FreeLibrary(hUxTheme);
@@ -3155,12 +3281,37 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         int statusParts[5] = { 200, 360, 580, 840, -1 };
         SendMessage(g_hStatusBar, SB_SETPARTS, 5, (LPARAM)statusParts);
 
-        // Subclass pour le rendu moderne sombre des colonnes et de l'en-tête (zéro colonnes noires)
+        // Subclass pour le rendu moderne sombre des colonnes et infobulles de cellules
         SetWindowSubclass(g_hListView, ListViewSubclassProc, 1, 0);
         HWND hHeader = ListView_GetHeader(g_hListView);
         if (hHeader) {
             SendMessage(hHeader, WM_SETFONT, (WPARAM)hFont, TRUE);
             SetWindowSubclass(hHeader, HeaderSubclassProc, 2, 0);
+        }
+
+        // Infobulle native affichant le texte complet lorsque le contenu d'une cellule dépasse sa colonne
+        g_hListTooltip = CreateWindowExW(
+            WS_EX_TOPMOST,
+            TOOLTIPS_CLASSW,
+            NULL,
+            WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+            CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+            hWnd, NULL, GetModuleHandle(NULL), NULL
+        );
+        if (g_hListTooltip) {
+            SendMessageW(g_hListTooltip, TTM_SETMAXTIPWIDTH, 0, (LPARAM)640);
+            SendMessageW(g_hListTooltip, TTM_SETDELAYTIME, TTDT_INITIAL, MAKELONG(350, 0));
+            SendMessageW(g_hListTooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, MAKELONG(20000, 0));
+            SendMessageW(g_hListTooltip, TTM_SETDELAYTIME, TTDT_RESHOW, MAKELONG(80, 0));
+
+            TTTOOLINFOW ti = { 0 };
+            ti.cbSize = sizeof(TTTOOLINFOW);
+            ti.uFlags = TTF_IDISHWND | TTF_TRANSPARENT;
+            ti.hwnd = hWnd;
+            ti.uId = (UINT_PTR)g_hListView;
+            ti.lpszText = LPSTR_TEXTCALLBACKW;
+            SendMessageW(g_hListTooltip, TTM_ADDTOOLW, 0, (LPARAM)&ti);
+            SendMessageW(g_hListTooltip, TTM_ACTIVATE, FALSE, 0);
         }
 
         // Subclass des boutons pour un rendu sombre mat, feutré et non éblouissant
@@ -3202,6 +3353,24 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         if (listHeight < 50) listHeight = 50;
 
         MoveWindow(g_hListView, 10, listTop, width - 20, listHeight, TRUE);
+
+        // Étendre automatiquement la dernière colonne (Ligne de commande) pour remplir l'espace disponible
+        if (g_hListView) {
+            RECT rcLV = { 0 };
+            GetClientRect(g_hListView, &rcLV);
+            int clientW = rcLV.right - rcLV.left;
+            int fixedSum = 0;
+            for (int c = 0; c < COL_CMDLINE; c++) {
+                fixedSum += ListView_GetColumnWidth(g_hListView, c);
+            }
+            int avail = clientW - fixedSum;
+            if (avail < 240) avail = 240;
+            int curCmdW = ListView_GetColumnWidth(g_hListView, COL_CMDLINE);
+            if (avail > curCmdW || curCmdW <= g_LastAutoCmdWidth + 2) {
+                ListView_SetColumnWidth(g_hListView, COL_CMDLINE, avail);
+                g_LastAutoCmdWidth = avail;
+            }
+        }
         return 0;
     }
 
@@ -3475,6 +3644,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
     case WM_NOTIFY: {
         LPNMHDR lpnm = (LPNMHDR)lParam;
+        if (g_hListTooltip && lpnm->hwndFrom == g_hListTooltip && lpnm->code == TTN_GETDISPINFOW) {
+            LPNMTTDISPINFOW pttdi = (LPNMTTDISPINFOW)lParam;
+            pttdi->lpszText = (g_szListTipText[0] != L'\0') ? g_szListTipText : L"";
+            return 0;
+        }
         if (lpnm->idFrom == IDC_LISTVIEW) {
             // RENDU PERSONNALISÉ DES LIGNES EN MODE SOMBRE (TEXTE BLANC & FOND SOMBRE LISIBLE)
             if (lpnm->code == NM_CUSTOMDRAW) {
@@ -3609,6 +3783,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         return 0;
 
     case WM_DESTROY:
+        if (g_hListTooltip) {
+            DestroyWindow(g_hListTooltip);
+            g_hListTooltip = NULL;
+        }
         if (g_hListView) {
             RemoveWindowSubclass(g_hListView, ListViewSubclassProc, 1);
             HWND hHeader = ListView_GetHeader(g_hListView);
@@ -3669,7 +3847,7 @@ void InitListViewColumns(HWND hListView) {
     LVCOLUMNW lvc = { 0 };
     lvc.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM | LVCF_FMT;
 
-    int colWidths[COL_COUNT] = { 200, 75, 80, 105, 110, 110, 80, 120, 420 };
+    int colWidths[COL_COUNT] = { 200, 75, 80, 105, 110, 110, 80, 120, 320 };
     int colFmts[COL_COUNT] = {
         LVCFMT_LEFT, LVCFMT_RIGHT, LVCFMT_RIGHT, LVCFMT_RIGHT,
         LVCFMT_RIGHT, LVCFMT_RIGHT, LVCFMT_RIGHT, LVCFMT_LEFT, LVCFMT_LEFT
@@ -4526,6 +4704,22 @@ void RefreshProcessList(void) {
     }
 
     UpdateStatusBar(g_FilteredCount, g_ProcessCount, totalCpuPercent);
+
+    // Mettre à jour l'infobulle si une cellule tronquée est actuellement survolée
+    if (g_hListTooltip && g_TipHoverItem >= 0 && g_TipHoverSubItem >= 0) {
+        WCHAR szCellNow[2048] = { 0 };
+        if (g_TipHoverItem < g_FilteredCount &&
+            IsListCellTruncated(g_hListView, g_TipHoverItem, g_TipHoverSubItem, szCellNow, 2048)) {
+            if (wcscmp(g_szListTipText, szCellNow) != 0) {
+                wcsncpy_s(g_szListTipText, 2048, szCellNow, _TRUNCATE);
+                SendMessageW(g_hListTooltip, TTM_UPDATE, 0, 0);
+            }
+        } else if (g_szListTipText[0] != L'\0') {
+            g_szListTipText[0] = L'\0';
+            SendMessageW(g_hListTooltip, TTM_POP, 0, 0);
+            SendMessageW(g_hListTooltip, TTM_ACTIVATE, FALSE, 0);
+        }
+    }
 }
 
 // Terminaison brutale immédiate sans confirmation (VK_DELETE ou bouton)

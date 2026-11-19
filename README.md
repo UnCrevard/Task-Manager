@@ -12,7 +12,7 @@ A lightweight, native **Windows Task Manager** written from scratch in **pure C*
 - **1-Hour Rolling History (3,600s)** — Three real-time graphs at the top of the window tracking **CPU**, **Memory (RAM)**, and **GPU (3D Engine)** across the last hour (`60m` to `0s`).
 - **Interactive Hover Inspector** — Moving the mouse over any point along a 1-hour graph displays a vertical tracker line and tooltip showing the timestamp (`-XXm YYs`), resource percentage, and the **top consuming process** at that exact second (image name, PID, and usage).
 - **Per-Process Telemetry** — Tracks real-time **CPU %** (`GetProcessTimes` / `GetSystemTimes`), **Memory** (`WorkingSetSize`), **Disk I/O MB/s** (`ReadTransferCount + WriteTransferCount`), **Network I/O KB/s** (`OtherTransferCount`), **GPU %** (real WDDM engine utilization via PDH `\GPU Engine(*)\Utilization Percentage`), **Priority Class**, and full **Command Line (CLI Args)** read directly from the remote PEB (`NtQueryInformationProcess` + `ReadProcessMemory`).
-- **Anti-Flicker Differential ListView** — Updates cells in place without clearing the list (`LVS_EX_DOUBLEBUFFER`), preserving scroll position and row selection during 1-second refreshes.
+- **Anti-Flicker Differential ListView & Cell Tooltips** — Updates cells in place without clearing the list (`LVS_EX_DOUBLEBUFFER`), preserving scroll position and row selection during 1-second refreshes, and automatically displays full-text tooltips when any cell exceeds its column width.
 - **Interactive Sorting** — Click any column header to sort ascending/descending (`▲` / `▼` + native `HDF_SORTUP` / `HDF_SORTDOWN` indicators) while keeping column titles permanently visible.
 
 ### System Tray & Explorer Crash Recovery
@@ -33,7 +33,7 @@ A lightweight, native **Windows Task Manager** written from scratch in **pure C*
   - `System (Auto)` — Detects the Windows UI language via `GetUserDefaultUILanguage()` and falls back to **English** if unsupported.
   - `English`, `Français`, `Español`, `Deutsch`, `Italiano`, `Português`.
 - **Centralized Win32 Resource Strings** — Every label, column header, menu item, tooltip, status bar segment, and dialog string is stored in `src/resource.rc` (`STRINGTABLE` with UTF-8 codepage `65001`) and loaded via `LoadStringW`, with an in-memory fallback if compiled without `windres`.
-- **About & Build Versioning (`src/version.h`)** — Displays the application version (`APP_VER_MAJOR.MINOR.PATCH.BUILD`), build number (`1.2.0.4 (Build 4)`), compile date/time, and native `VERSIONINFO` metadata in the PE binary.
+- **About & Build Versioning (`src/version.h`)** — Displays the application version (`APP_VER_MAJOR.MINOR.PATCH.BUILD`), build number (`1.2.0.5 (Build 5)`), compile date/time, and native `VERSIONINFO` metadata in the PE binary.
 - **Adaptive Windows Dark / Light Theme** — Follows the Windows system theme using `DwmSetWindowAttribute` and `uxtheme.dll`.
 
 ### Process Management & Filtering

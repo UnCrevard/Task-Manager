@@ -83,6 +83,7 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #define IDC_SET_CHK_AUTO     6002
 #define IDC_SET_CHK_HIDEWIN  6003
 #define IDC_SET_ACTIVE_LANG  6004
+#define IDC_SET_COMBO_STARTUP 6005
 
 // Identifiants du Timer
 #define IDT_REFRESH_TIMER    2001
@@ -195,6 +196,7 @@ static int g_SortColumn = COL_CPU; // Tri par défaut sur le CPU
 static BOOL g_bSortAscending = FALSE; // Tri décroissant (processus les plus actifs en premier)
 static BOOL g_bHideWindowsProcesses = FALSE; // Toggle pour masquer les processus de base Windows
 static BOOL g_bAutoRefresh = TRUE; // Auto-refresh à 1s
+static BOOL g_bStartMinimized = FALSE; // Démarrer réduit dans la zone de notification (FALSE = ouvert)
 static int g_nLanguageSetting = APP_LANG_AUTO; // Langue (Auto = système, repli Anglais)
 
 // Identifiants et état des 3 Tray Icons (CPU, RAM, GPU) avec historique
@@ -507,6 +509,9 @@ const WCHAR* GetResString(UINT uID) {
     case IDS_SETTINGS_LANG_PT: return L"Português";
     case IDS_SETTINGS_AUTOREFRESH: return bEn ? L"Auto-refresh (1 second)" : L"Rafraîchissement automatique (1 seconde)";
     case IDS_SETTINGS_HIDE_WINDOWS: return bEn ? L"Hide core Windows processes" : L"Masquer les processus Windows de base";
+    case IDS_SETTINGS_STARTUP_LABEL: return bEn ? L"On startup:" : L"Au démarrage :";
+    case IDS_SETTINGS_STARTUP_OPEN: return bEn ? L"Open (show window)" : L"Ouvert (afficher la fenêtre)";
+    case IDS_SETTINGS_STARTUP_MINIMIZED: return bEn ? L"Minimized (System Tray)" : L"Réduit (zone de notification)";
     case IDS_SETTINGS_ACTIVE_LANG_FMT: return bEn ? L"Active language: %s" : L"Langue active : %s";
     case IDS_BTN_OK: return L"OK";
     case IDS_BTN_CANCEL: return bEn ? L"Cancel" : L"Annuler";
@@ -574,6 +579,7 @@ void LoadSettings(void) {
 
     g_bAutoRefresh = (GetPrivateProfileIntW(L"Settings", L"AutoRefresh", 1, szIniPath) != 0);
     g_bHideWindowsProcesses = (GetPrivateProfileIntW(L"Settings", L"HideWindowsProcesses", 0, szIniPath) != 0);
+    g_bStartMinimized = (GetPrivateProfileIntW(L"Settings", L"StartMinimized", 0, szIniPath) != 0);
 
     WCHAR szLang[32] = { 0 };
     GetPrivateProfileStringW(L"Settings", L"Language", L"auto", szLang, 32, szIniPath);
@@ -617,6 +623,7 @@ void SaveSettings(void) {
 
     WritePrivateProfileStringW(L"Settings", L"AutoRefresh", g_bAutoRefresh ? L"1" : L"0", szIniPath);
     WritePrivateProfileStringW(L"Settings", L"HideWindowsProcesses", g_bHideWindowsProcesses ? L"1" : L"0", szIniPath);
+    WritePrivateProfileStringW(L"Settings", L"StartMinimized", g_bStartMinimized ? L"1" : L"0", szIniPath);
 
     const WCHAR* szLangVal = L"auto";
     switch (g_nLanguageSetting) {
@@ -2443,6 +2450,7 @@ typedef struct {
     HWND hParent;
     HWND hComboLang;
     HWND hLblActiveLang;
+    HWND hComboStartup;
     HWND hChkAuto;
     HWND hChkHideWin;
     HWND hBtnOk;
@@ -2535,11 +2543,32 @@ static LRESULT CALLBACK SettingsWndProc(HWND hDlg, UINT message, WPARAM wParam, 
         SendMessageW(pState->hLblActiveLang, WM_SETFONT, (WPARAM)(g_hFontSmall ? g_hFontSmall : hFont), TRUE);
         UpdateActiveLangPreviewLabel(pState);
 
+        // Label Démarrage (ouvert ou réduit)
+        HWND hLblStartup = CreateWindowExW(
+            0, L"STATIC", GetResString(IDS_SETTINGS_STARTUP_LABEL),
+            WS_CHILD | WS_VISIBLE | SS_LEFT,
+            20, 102, 360, 18,
+            hDlg, NULL, hInst, NULL
+        );
+        SendMessageW(hLblStartup, WM_SETFONT, (WPARAM)hFont, TRUE);
+
+        // Liste déroulante Démarrage
+        pState->hComboStartup = CreateWindowExW(
+            0, L"COMBOBOX", L"",
+            WS_CHILD | WS_VISIBLE | WS_TABSTOP | CBS_DROPDOWNLIST | WS_VSCROLL,
+            20, 124, 360, 100,
+            hDlg, (HMENU)IDC_SET_COMBO_STARTUP, hInst, NULL
+        );
+        SendMessageW(pState->hComboStartup, WM_SETFONT, (WPARAM)hFont, TRUE);
+        SendMessageW(pState->hComboStartup, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_STARTUP_OPEN));
+        SendMessageW(pState->hComboStartup, CB_ADDSTRING, 0, (LPARAM)GetResString(IDS_SETTINGS_STARTUP_MINIMIZED));
+        SendMessageW(pState->hComboStartup, CB_SETCURSEL, (WPARAM)(g_bStartMinimized ? 1 : 0), 0);
+
         // Case à cocher Auto-refresh
         pState->hChkAuto = CreateWindowExW(
             0, L"BUTTON", GetResString(IDS_SETTINGS_AUTOREFRESH),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-            20, 108, 360, 24,
+            20, 160, 360, 24,
             hDlg, (HMENU)IDC_SET_CHK_AUTO, hInst, NULL
         );
         SendMessageW(pState->hChkAuto, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -2549,7 +2578,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hDlg, UINT message, WPARAM wParam, 
         pState->hChkHideWin = CreateWindowExW(
             0, L"BUTTON", GetResString(IDS_SETTINGS_HIDE_WINDOWS),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_AUTOCHECKBOX,
-            20, 138, 360, 24,
+            20, 190, 360, 24,
             hDlg, (HMENU)IDC_SET_CHK_HIDEWIN, hInst, NULL
         );
         SendMessageW(pState->hChkHideWin, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -2559,7 +2588,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hDlg, UINT message, WPARAM wParam, 
         pState->hBtnOk = CreateWindowExW(
             0, L"BUTTON", GetResString(IDS_BTN_OK),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-            190, 182, 92, 28,
+            190, 232, 92, 28,
             hDlg, (HMENU)IDOK, hInst, NULL
         );
         SendMessageW(pState->hBtnOk, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -2567,7 +2596,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hDlg, UINT message, WPARAM wParam, 
         pState->hBtnCancel = CreateWindowExW(
             0, L"BUTTON", GetResString(IDS_BTN_CANCEL),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-            288, 182, 92, 28,
+            288, 232, 92, 28,
             hDlg, (HMENU)IDCANCEL, hInst, NULL
         );
         SendMessageW(pState->hBtnCancel, WM_SETFONT, (WPARAM)hFont, TRUE);
@@ -2579,6 +2608,7 @@ static LRESULT CALLBACK SettingsWndProc(HWND hDlg, UINT message, WPARAM wParam, 
             pfnSetWindowTheme pSetWindowTheme = (pfnSetWindowTheme)(void*)GetProcAddress(hUxTheme, "SetWindowTheme");
             if (pSetWindowTheme) {
                 pSetWindowTheme(pState->hComboLang, g_bDarkModeActive ? L"DarkMode_CFD" : L"Explorer", NULL);
+                pSetWindowTheme(pState->hComboStartup, g_bDarkModeActive ? L"DarkMode_CFD" : L"Explorer", NULL);
                 if (g_bDarkModeActive) {
                     // Permet au texte des cases à cocher de respecter WM_CTLCOLORSTATIC en mode sombre
                     pSetWindowTheme(pState->hChkAuto, L"", L"");
@@ -2607,6 +2637,9 @@ static LRESULT CALLBACK SettingsWndProc(HWND hDlg, UINT message, WPARAM wParam, 
                 if (selLang >= APP_LANG_AUTO && selLang <= APP_LANG_PT) {
                     g_nLanguageSetting = selLang;
                 }
+
+                int selStartup = (int)SendMessageW(pState->hComboStartup, CB_GETCURSEL, 0, 0);
+                g_bStartMinimized = (selStartup == 1);
 
                 BOOL newAuto = (SendMessageW(pState->hChkAuto, BM_GETCHECK, 0, 0) == BST_CHECKED);
                 if (newAuto != g_bAutoRefresh) {
@@ -2722,7 +2755,7 @@ void ShowSettingsDialog(HWND hParent) {
     state.hParent = hParent;
 
     int dlgW = 416;
-    int dlgH = 262;
+    int dlgH = 312;
     RECT rcParent;
     GetWindowRect(hParent, &rcParent);
     int x = rcParent.left + ((rcParent.right - rcParent.left) - dlgW) / 2;
@@ -3078,8 +3111,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     if (g_hAppIconSm) {
         SendMessageW(hWnd, WM_SETICON, ICON_SMALL, (LPARAM)g_hAppIconSm);
     }
-    ShowWindow(hWnd, nCmdShow);
-    UpdateWindow(hWnd);
+    if (g_bStartMinimized) {
+        RECT rcClient = { 0 };
+        GetClientRect(hWnd, &rcClient);
+        SendMessageW(hWnd, WM_SIZE, SIZE_RESTORED, MAKELPARAM(rcClient.right - rcClient.left, rcClient.bottom - rcClient.top));
+        g_bInTray = TRUE;
+        ShowWindow(hWnd, SW_HIDE);
+    } else {
+        g_bInTray = FALSE;
+        ShowWindow(hWnd, nCmdShow);
+        UpdateWindow(hWnd);
+    }
 
     InitGpuTelemetry();
     RefreshProcessList();

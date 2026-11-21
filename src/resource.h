@@ -133,6 +133,9 @@
 #define IDS_SETTINGS_LANG_DE            5121
 #define IDS_SETTINGS_LANG_IT            5122
 #define IDS_SETTINGS_LANG_PT            5123
+#define IDS_SETTINGS_STARTUP_LABEL      5124
+#define IDS_SETTINGS_STARTUP_OPEN       5125
+#define IDS_SETTINGS_STARTUP_MINIMIZED  5126
 
 // Fenêtre À propos (About)
 #define IDS_ABOUT_TITLE                 5130

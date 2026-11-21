@@ -33,7 +33,8 @@ A lightweight, native **Windows Task Manager** written from scratch in **pure C*
   - `System (Auto)` — Detects the Windows UI language via `GetUserDefaultUILanguage()` and falls back to **English** if unsupported.
   - `English`, `Français`, `Español`, `Deutsch`, `Italiano`, `Português`.
 - **Centralized Win32 Resource Strings** — Every label, column header, menu item, tooltip, status bar segment, and dialog string is stored in `src/resource.rc` (`STRINGTABLE` with UTF-8 codepage `65001`) and loaded via `LoadStringW`, with an in-memory fallback if compiled without `windres`.
-- **About & Build Versioning (`src/version.h`)** — Displays the application version (`APP_VER_MAJOR.MINOR.PATCH.BUILD`), build number (`1.2.0.5 (Build 5)`), compile date/time, and native `VERSIONINFO` metadata in the PE binary.
+- **About & Build Versioning (`src/version.h`)** — Displays the application version (`APP_VER_MAJOR.MINOR.PATCH.BUILD`), build number (`1.2.0.6 (Build 6)`), compile date/time, and native `VERSIONINFO` metadata in the PE binary.
+- **Configurable Startup State** — Choose in **Settings** whether the application launches **Open (show window)** or **Minimized (System Tray)** directly into the 3 live tray sparkline icons.
 - **Adaptive Windows Dark / Light Theme** — Follows the Windows system theme using `DwmSetWindowAttribute` and `uxtheme.dll`.
 
 ### Process Management & Filtering
@@ -52,6 +53,7 @@ Settings and exclusions are automatically saved to `settings.ini` alongside `tas
 [Settings]
 AutoRefresh=1
 HideWindowsProcesses=0
+StartMinimized=0
 Language=auto
 SortColumn=2
 SortAscending=0

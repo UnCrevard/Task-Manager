@@ -8,7 +8,7 @@
 #define APP_VER_MAJOR 1
 #define APP_VER_MINOR 2
 #define APP_VER_PATCH 0
-#define APP_VER_BUILD 6
+#define APP_VER_BUILD 7
 
 #define APP_STR_HELPER(x) #x
 #define APP_STR(x) APP_STR_HELPER(x)

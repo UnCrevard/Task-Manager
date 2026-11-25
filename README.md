@@ -24,7 +24,7 @@ A lightweight, native **Windows Task Manager** written from scratch in **pure C*
   - **GPU** (Electric cyan, turns red above 80%)
 - **Minimize to Tray on Close** — Clicking the window close button (`×`) hides the window to the system tray without interrupting monitoring.
 - **Single-Click Restore** — A single left-click (or double-click) on any of the 3 tray icons immediately brings the window back to the foreground. Right-click opens a tray menu with **Open Task Manager** and **Exit permanently**.
-- **Explorer Crash Recovery** — Listens for `TaskbarCreated` (with UIPI bypass via `ChangeWindowMessageFilterEx`) and falls back from `NIM_MODIFY` to `NIM_ADD` so all 3 tray icons are automatically restored if `explorer.exe` restarts or crashes.
+- **Explorer Crash, Sleep & Session-Lock Recovery** — Runs `Shell_NotifyIconW` and PDH GPU sampling off the UI thread so the window never freezes, handles `TaskbarCreated` (with UIPI bypass), `WM_WTSSESSION_CHANGE` (lock/unlock), `WM_POWERBROADCAST` (sleep/resume), and `WM_DISPLAYCHANGE`, and auto-recovers tray icons and WDDM GPU counters on resume.
 
 ### Multi-Language UI, Settings & About
 ![Settings & About Dialogs](screenshots/settings-about.png)
@@ -33,7 +33,7 @@ A lightweight, native **Windows Task Manager** written from scratch in **pure C*
   - `System (Auto)` — Detects the Windows UI language via `GetUserDefaultUILanguage()` and falls back to **English** if unsupported.
   - `English`, `Français`, `Español`, `Deutsch`, `Italiano`, `Português`.
 - **Centralized Win32 Resource Strings** — Every label, column header, menu item, tooltip, status bar segment, and dialog string is stored in `src/resource.rc` (`STRINGTABLE` with UTF-8 codepage `65001`) and loaded via `LoadStringW`, with an in-memory fallback if compiled without `windres`.
-- **About & Build Versioning (`src/version.h`)** — Displays the application version (`APP_VER_MAJOR.MINOR.PATCH.BUILD`), build number (`1.2.0.6 (Build 6)`), compile date/time, and native `VERSIONINFO` metadata in the PE binary.
+- **About & Build Versioning (`src/version.h`)** — Displays the application version (`APP_VER_MAJOR.MINOR.PATCH.BUILD`), build number (`1.2.0.7 (Build 7)`), compile date/time, and native `VERSIONINFO` metadata in the PE binary.
 - **Configurable Startup State** — Choose in **Settings** whether the application launches **Open (show window)** or **Minimized (System Tray)** directly into the 3 live tray sparkline icons.
 - **Adaptive Windows Dark / Light Theme** — Follows the Windows system theme using `DwmSetWindowAttribute` and `uxtheme.dll`.
 

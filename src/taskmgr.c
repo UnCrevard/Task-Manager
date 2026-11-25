@@ -64,6 +64,34 @@ processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #define HDF_SORTDOWN 0x0200
 #endif
 
+// Définitions pour les notifications de session (verrouillage) et d'alimentation (veille)
+#ifndef WM_WTSSESSION_CHANGE
+#define WM_WTSSESSION_CHANGE    0x02B1
+#endif
+#ifndef WTS_CONSOLE_CONNECT
+#define WTS_CONSOLE_CONNECT     0x1
+#define WTS_CONSOLE_DISCONNECT  0x2
+#define WTS_REMOTE_CONNECT      0x3
+#define WTS_REMOTE_DISCONNECT   0x4
+#define WTS_SESSION_LOCK        0x7
+#define WTS_SESSION_UNLOCK      0x8
+#endif
+#ifndef NOTIFY_FOR_THIS_SESSION
+#define NOTIFY_FOR_THIS_SESSION 0
+#endif
+#ifndef WM_POWERBROADCAST
+#define WM_POWERBROADCAST       0x0218
+#endif
+#ifndef PBT_APMSUSPEND
+#define PBT_APMSUSPEND          0x0004
+#endif
+#ifndef PBT_APMRESUMESUSPEND
+#define PBT_APMRESUMESUSPEND    0x0007
+#endif
+#ifndef PBT_APMRESUMEAUTOMATIC
+#define PBT_APMRESUMEAUTOMATIC  0x0012
+#endif
+
 // Identifiants des contrôles UI
 #define IDC_LISTVIEW         1001
 #define IDC_STATUSBAR        1002
@@ -160,15 +188,23 @@ typedef struct {
     BOOL isWindowsBase;
 } ProcessEntry;
 
-// Historique global pour le calcul des deltas
+// Historique global pour le calcul des deltas et le cache par (PID, createTime)
 typedef struct {
     DWORD pid;
+    ULONGLONG createTime;
     ULONGLONG kernelTime;
     ULONGLONG userTime;
     ULONGLONG readBytes;
     ULONGLONG writeBytes;
     ULONGLONG otherBytes;
     ULONGLONG timestamp;
+    BOOL bPathCached;
+    BOOL bWinBaseCached;
+    BOOL isWindowsBase;
+    BOOL bCmdLineCached;
+    int cmdLineAttempts;
+    WCHAR szFullPath[MAX_PATH];
+    WCHAR szCmdLine[1024];
 } ProcessHistory;
 
 #define MAX_HISTORY_PROCESSES 4096
@@ -264,34 +300,42 @@ typedef struct {
 #define MAX_GPU_PROC_ENGINE_PAIRS 2048
 #define GPU_SAMPLE_MIN_INTERVAL_MS 750
 
-static HMODULE g_hPdhDll = NULL;
-static pfnPdhOpenQueryW g_pfnPdhOpenQueryW = NULL;
-static pfnPdhAddEnglishCounterW g_pfnPdhAddEnglishCounterW = NULL;
-static pfnPdhCollectQueryData g_pfnPdhCollectQueryData = NULL;
-static pfnPdhGetFormattedCounterArrayW g_pfnPdhGetFormattedCounterArrayW = NULL;
-static pfnPdhCloseQuery g_pfnPdhCloseQuery = NULL;
-
-static PDH_HQUERY g_hGpuQuery = NULL;
-static PDH_HCOUNTER g_hGpuCounter = NULL;
-static BOOL g_bGpuPdhReady = FALSE;
-static BOOL g_bGpuBaselineCollected = FALSE;
-static ULONGLONG g_LastGpuCollectTick = 0;
-
-static BYTE *g_pGpuPdhBuf = NULL;
-static DWORD g_GpuPdhBufCap = 0;
+static CRITICAL_SECTION g_csGpuCache;
+static BOOL g_bGpuCsInit = FALSE;
+static HANDLE g_hGpuEvent = NULL;
+static HANDLE g_hGpuStopEvent = NULL;
+static HANDLE g_hGpuThread = NULL;
+static volatile LONG g_lGpuNeedsReset = 0;
 
 static GpuProcSample g_CachedGpuProcs[MAX_GPU_PROC_SAMPLES];
 static int g_CachedGpuProcCount = 0;
 static double g_CachedTotalGpuPct = 0.0;
 
-static BOOL g_bInTray = FALSE;
-static BOOL g_bTrayCpuCreated = FALSE;
-static BOOL g_bTrayRamCreated = FALSE;
-static BOOL g_bTrayGpuCreated = FALSE;
+// État de session / veille & Worker asynchrone pour la zone de notification (évite tout blocage UI)
+static volatile LONG g_lSessionLocked = 0;
+static volatile LONG g_lSystemSuspended = 0;
+static volatile LONG g_lTrayNeedsRetry = 0;
+static BOOL g_bWtsRegistered = FALSE;
 
-static HICON g_hIconCpu = NULL;
-static HICON g_hIconRam = NULL;
-static HICON g_hIconGpu = NULL;
+typedef struct {
+    BOOL bHasUpdate;
+    BOOL bForceReset;
+    HICON hCpu;
+    HICON hRam;
+    HICON hGpu;
+    WCHAR szTipCpu[128];
+    WCHAR szTipRam[128];
+    WCHAR szTipGpu[128];
+} TrayPendingPayload;
+
+static CRITICAL_SECTION g_csTray;
+static BOOL g_bTrayCsInit = FALSE;
+static TrayPendingPayload g_TrayPending = { 0 };
+static HANDLE g_hTrayEvent = NULL;
+static HANDLE g_hTrayStopEvent = NULL;
+static HANDLE g_hTrayThread = NULL;
+
+static BOOL g_bInTray = FALSE;
 
 // Icônes de l'application Task Manager
 #define IDI_APP_ICON 1
@@ -369,6 +413,8 @@ void UpdateExclusionsButtonText(void);
 
 // Gestion des 3 icônes dynamiques d'historique dans la barre des tâches (Tray Icons)
 HICON CreateHistoryGraphIcon(const double *history, int count, DWORD baseColor, DWORD peakColor, DWORD alertColor);
+void StartTrayWorker(void);
+void StopTrayWorker(void);
 void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb);
 void RecreateTrayIcons(BOOL bResetCreatedFlags);
 void RemoveAllTrayIcons(void);
@@ -376,8 +422,8 @@ void RemoveAllTrayIcons(void);
 // Télémétrie GPU réelle via PDH ("\GPU Engine(*)\Utilization Percentage")
 void InitGpuTelemetry(void);
 void ShutdownGpuTelemetry(void);
-void CollectGpuTelemetry(ULONGLONG curTick);
-double LookupCachedGpuPercent(DWORD pid);
+void TriggerGpuTelemetrySample(void);
+double LookupGpuPercentSnapshot(DWORD pid, const GpuProcSample *samples, int count);
 
 // ============================================================================
 // Centralisation des chaînes de caractères (Chargement depuis resource.rc)
@@ -1002,24 +1048,236 @@ static void AllowMessageThroughUIPI(HWND hWnd, UINT uMsg) {
     }
 }
 
-// Ajout ou mise à jour sécurisée d'une icône Tray (repli automatique sur NIM_ADD si Explorer a redémarré)
-static void UpsertSingleTrayIcon(NOTIFYICONDATAW *pNid, BOOL *pbCreated) {
-    if (!*pbCreated) {
+// Vérifie sans bloquer si la barre des tâches Explorer (Shell_TrayWnd) répond
+static BOOL IsShellTrayResponsive(void) {
+    HWND hTray = FindWindowW(L"Shell_TrayWnd", NULL);
+    if (!hTray) return FALSE;
+    DWORD_PTR dwResult = 0;
+    LRESULT lr = SendMessageTimeoutW(
+        hTray, WM_NULL, 0, 0,
+        SMTO_ABORTIFHUNG | SMTO_BLOCK, 250, &dwResult
+    );
+    return (lr != 0);
+}
+
+// Ajout ou mise à jour robuste d'une icône Tray (exécuté uniquement sur TrayWorkerThread)
+// Évite tout blocage définitif si NIM_MODIFY échoue transitoirement et que l'icône existe déjà côté Explorer
+static BOOL UpsertSingleTrayIconWorker(NOTIFYICONDATAW *pNid, BOOL *pbCreated, BOOL bForceReset) {
+    if (bForceReset) {
+        *pbCreated = FALSE;
+    }
+
+    if (*pbCreated) {
+        if (Shell_NotifyIconW(NIM_MODIFY, pNid)) {
+            return TRUE;
+        }
         if (Shell_NotifyIconW(NIM_ADD, pNid)) {
             *pbCreated = TRUE;
+            return TRUE;
         }
+        Shell_NotifyIconW(NIM_DELETE, pNid);
+        if (Shell_NotifyIconW(NIM_ADD, pNid)) {
+            *pbCreated = TRUE;
+            return TRUE;
+        }
+        *pbCreated = FALSE;
+        return FALSE;
     } else {
-        if (!Shell_NotifyIconW(NIM_MODIFY, pNid)) {
-            *pbCreated = FALSE;
-            if (Shell_NotifyIconW(NIM_ADD, pNid)) {
-                *pbCreated = TRUE;
-            }
+        if (Shell_NotifyIconW(NIM_ADD, pNid)) {
+            *pbCreated = TRUE;
+            return TRUE;
         }
+        // Si l'icône existait encore dans Explorer (ex. après veille ou déverrouillage), tenter NIM_MODIFY
+        if (Shell_NotifyIconW(NIM_MODIFY, pNid)) {
+            *pbCreated = TRUE;
+            return TRUE;
+        }
+        Shell_NotifyIconW(NIM_DELETE, pNid);
+        if (Shell_NotifyIconW(NIM_ADD, pNid)) {
+            *pbCreated = TRUE;
+            return TRUE;
+        }
+        *pbCreated = FALSE;
+        return FALSE;
     }
 }
 
-// Synchronisation interne des 3 icônes d'historique (avec mise à jour optionnelle de l'historique)
-static void SyncTrayIconsInternal(BOOL bUpdateHistory, double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb) {
+static void DestroyPayloadIcons(TrayPendingPayload *pPayload) {
+    if (!pPayload) return;
+    if (pPayload->hCpu) { DestroyIcon(pPayload->hCpu); pPayload->hCpu = NULL; }
+    if (pPayload->hRam) { DestroyIcon(pPayload->hRam); pPayload->hRam = NULL; }
+    if (pPayload->hGpu) { DestroyIcon(pPayload->hGpu); pPayload->hGpu = NULL; }
+    pPayload->bHasUpdate = FALSE;
+    pPayload->bForceReset = FALSE;
+}
+
+static DWORD WINAPI TrayWorkerThreadProc(LPVOID lpParam) {
+    (void)lpParam;
+    BOOL bCpuCreated = FALSE;
+    BOOL bRamCreated = FALSE;
+    BOOL bGpuCreated = FALSE;
+    HICON hLiveCpu = NULL;
+    HICON hLiveRam = NULL;
+    HICON hLiveGpu = NULL;
+
+    HANDLE waitHandles[2] = { g_hTrayStopEvent, g_hTrayEvent };
+    for (;;) {
+        DWORD dwWait = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
+        if (dwWait == WAIT_OBJECT_0 || dwWait == WAIT_FAILED) {
+            break;
+        }
+
+        TrayPendingPayload work;
+        memset(&work, 0, sizeof(work));
+
+        EnterCriticalSection(&g_csTray);
+        if (g_TrayPending.bHasUpdate) {
+            work = g_TrayPending;
+            memset(&g_TrayPending, 0, sizeof(g_TrayPending));
+        }
+        LeaveCriticalSection(&g_csTray);
+
+        if (!work.bHasUpdate) {
+            continue;
+        }
+
+        // Ne pas envoyer de requêtes Shell_NotifyIconW pendant la veille, le verrouillage ou si Explorer est gelé
+        if (InterlockedCompareExchange(&g_lSystemSuspended, 0, 0) != 0 ||
+            InterlockedCompareExchange(&g_lSessionLocked, 0, 0) != 0 ||
+            !g_hMainWnd ||
+            !IsShellTrayResponsive()) {
+            DestroyPayloadIcons(&work);
+            InterlockedExchange(&g_lTrayNeedsRetry, 1);
+            continue;
+        }
+
+        BOOL bAllOk = TRUE;
+
+        if (work.hCpu) {
+            NOTIFYICONDATAW nid;
+            memset(&nid, 0, sizeof(NOTIFYICONDATAW));
+            nid.cbSize = sizeof(NOTIFYICONDATAW);
+            nid.hWnd = g_hMainWnd;
+            nid.uID = TRAY_ID_CPU;
+            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+            nid.uCallbackMessage = WM_TRAYICON;
+            nid.hIcon = work.hCpu;
+            wcsncpy_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR), work.szTipCpu, _TRUNCATE);
+
+            if (UpsertSingleTrayIconWorker(&nid, &bCpuCreated, work.bForceReset)) {
+                if (hLiveCpu) DestroyIcon(hLiveCpu);
+                hLiveCpu = work.hCpu;
+                work.hCpu = NULL;
+            } else {
+                DestroyIcon(work.hCpu);
+                work.hCpu = NULL;
+                bAllOk = FALSE;
+            }
+        }
+
+        if (work.hRam) {
+            NOTIFYICONDATAW nid;
+            memset(&nid, 0, sizeof(NOTIFYICONDATAW));
+            nid.cbSize = sizeof(NOTIFYICONDATAW);
+            nid.hWnd = g_hMainWnd;
+            nid.uID = TRAY_ID_RAM;
+            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+            nid.uCallbackMessage = WM_TRAYICON;
+            nid.hIcon = work.hRam;
+            wcsncpy_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR), work.szTipRam, _TRUNCATE);
+
+            if (UpsertSingleTrayIconWorker(&nid, &bRamCreated, work.bForceReset)) {
+                if (hLiveRam) DestroyIcon(hLiveRam);
+                hLiveRam = work.hRam;
+                work.hRam = NULL;
+            } else {
+                DestroyIcon(work.hRam);
+                work.hRam = NULL;
+                bAllOk = FALSE;
+            }
+        }
+
+        if (work.hGpu) {
+            NOTIFYICONDATAW nid;
+            memset(&nid, 0, sizeof(NOTIFYICONDATAW));
+            nid.cbSize = sizeof(NOTIFYICONDATAW);
+            nid.hWnd = g_hMainWnd;
+            nid.uID = TRAY_ID_GPU;
+            nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+            nid.uCallbackMessage = WM_TRAYICON;
+            nid.hIcon = work.hGpu;
+            wcsncpy_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR), work.szTipGpu, _TRUNCATE);
+
+            if (UpsertSingleTrayIconWorker(&nid, &bGpuCreated, work.bForceReset)) {
+                if (hLiveGpu) DestroyIcon(hLiveGpu);
+                hLiveGpu = work.hGpu;
+                work.hGpu = NULL;
+            } else {
+                DestroyIcon(work.hGpu);
+                work.hGpu = NULL;
+                bAllOk = FALSE;
+            }
+        }
+
+        InterlockedExchange(&g_lTrayNeedsRetry, bAllOk ? 0 : 1);
+    }
+
+    // Nettoyage complet lors de l'arrêt de l'application
+    if (g_hMainWnd) {
+        NOTIFYICONDATAW nid;
+        memset(&nid, 0, sizeof(NOTIFYICONDATAW));
+        nid.cbSize = sizeof(NOTIFYICONDATAW);
+        nid.hWnd = g_hMainWnd;
+
+        if (bCpuCreated) { nid.uID = TRAY_ID_CPU; Shell_NotifyIconW(NIM_DELETE, &nid); }
+        if (bRamCreated) { nid.uID = TRAY_ID_RAM; Shell_NotifyIconW(NIM_DELETE, &nid); }
+        if (bGpuCreated) { nid.uID = TRAY_ID_GPU; Shell_NotifyIconW(NIM_DELETE, &nid); }
+    }
+
+    if (hLiveCpu) DestroyIcon(hLiveCpu);
+    if (hLiveRam) DestroyIcon(hLiveRam);
+    if (hLiveGpu) DestroyIcon(hLiveGpu);
+
+    EnterCriticalSection(&g_csTray);
+    DestroyPayloadIcons(&g_TrayPending);
+    LeaveCriticalSection(&g_csTray);
+
+    return 0;
+}
+
+void StartTrayWorker(void) {
+    if (g_hTrayThread) return;
+    if (!g_bTrayCsInit) {
+        InitializeCriticalSection(&g_csTray);
+        g_bTrayCsInit = TRUE;
+    }
+    if (!g_hTrayEvent) g_hTrayEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!g_hTrayStopEvent) g_hTrayStopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (g_hTrayEvent && g_hTrayStopEvent) {
+        g_hTrayThread = CreateThread(NULL, 0, TrayWorkerThreadProc, NULL, 0, NULL);
+    }
+}
+
+void StopTrayWorker(void) {
+    if (g_hTrayThread) {
+        if (g_hTrayStopEvent) SetEvent(g_hTrayStopEvent);
+        WaitForSingleObject(g_hTrayThread, 1500);
+        CloseHandle(g_hTrayThread);
+        g_hTrayThread = NULL;
+    }
+    if (g_bTrayCsInit) {
+        EnterCriticalSection(&g_csTray);
+        DestroyPayloadIcons(&g_TrayPending);
+        LeaveCriticalSection(&g_csTray);
+        DeleteCriticalSection(&g_csTray);
+        g_bTrayCsInit = FALSE;
+    }
+    if (g_hTrayEvent) { CloseHandle(g_hTrayEvent); g_hTrayEvent = NULL; }
+    if (g_hTrayStopEvent) { CloseHandle(g_hTrayStopEvent); g_hTrayStopEvent = NULL; }
+}
+
+// Synchronisation interne des 3 icônes d'historique (préparation sur UI, envoi asynchrone au TrayWorker)
+static void SyncTrayIconsInternal(BOOL bUpdateHistory, BOOL bForceReset, double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb) {
     if (!g_hMainWnd) return;
 
     if (bUpdateHistory) {
@@ -1049,6 +1307,16 @@ static void SyncTrayIconsInternal(BOOL bUpdateHistory, double cpuPct, double mem
         }
     }
 
+    // Si la session est verrouillée ou en veille, ne pas solliciter Shell_NotifyIconW (reprise auto au déverrouillage/réveil)
+    if (InterlockedCompareExchange(&g_lSystemSuspended, 0, 0) != 0 ||
+        InterlockedCompareExchange(&g_lSessionLocked, 0, 0) != 0) {
+        InterlockedExchange(&g_lTrayNeedsRetry, 1);
+        return;
+    }
+
+    StartTrayWorker();
+    if (!g_hTrayThread || !g_bTrayCsInit || !g_hTrayEvent) return;
+
     // Calcul des Top 4 consommateurs pour chaque ressource
     TopConsumer topCpu[4];
     TopConsumer topRam[4];
@@ -1057,88 +1325,50 @@ static void SyncTrayIconsInternal(BOOL bUpdateHistory, double cpuPct, double mem
     GetTop4Consumers(1, topRam);
     GetTop4Consumers(2, topGpu);
 
-    // 1. Icône CPU : Vert émeraude (Base: #10B981, Pic: #34D399, Alerte: #EF4444)
-    // Au survol souris : affiche le total CPU et le Top 4 des processus les plus gourmands en CPU
     HICON hNewCpu = CreateHistoryGraphIcon(g_TrayCpuHistory, TRAY_HISTORY_POINTS, 0xFF10B981, 0xFF34D399, 0xFFEF4444);
-    if (hNewCpu) {
-        NOTIFYICONDATAW nid;
-        memset(&nid, 0, sizeof(NOTIFYICONDATAW));
-        nid.cbSize = sizeof(NOTIFYICONDATAW);
-        nid.hWnd = g_hMainWnd;
-        nid.uID = TRAY_ID_CPU;
-        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-        nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = hNewCpu;
-
-        swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
-            L"CPU : %.1f %%\n1. %.11s: %.1f%%\n2. %.11s: %.1f%%\n3. %.11s: %.1f%%\n4. %.11s: %.1f%%",
-            g_LastCpuPct,
-            topCpu[0].szName[0] ? topCpu[0].szName : L"-", (topCpu[0].value > 0.0) ? topCpu[0].value : 0.0,
-            topCpu[1].szName[0] ? topCpu[1].szName : L"-", (topCpu[1].value > 0.0) ? topCpu[1].value : 0.0,
-            topCpu[2].szName[0] ? topCpu[2].szName : L"-", (topCpu[2].value > 0.0) ? topCpu[2].value : 0.0,
-            topCpu[3].szName[0] ? topCpu[3].szName : L"-", (topCpu[3].value > 0.0) ? topCpu[3].value : 0.0);
-
-        UpsertSingleTrayIcon(&nid, &g_bTrayCpuCreated);
-
-        if (g_hIconCpu) DestroyIcon(g_hIconCpu);
-        g_hIconCpu = hNewCpu;
-    }
-
-    // 2. Icône RAM : Violet vif (Base: #8B5CF6, Pic: #A78BFA, Alerte: #EF4444)
-    // Au survol souris : affiche le total RAM et le Top 4 des processus les plus gourmands en mémoire
     HICON hNewRam = CreateHistoryGraphIcon(g_TrayRamHistory, TRAY_HISTORY_POINTS, 0xFF8B5CF6, 0xFFA78BFA, 0xFFEF4444);
-    if (hNewRam) {
-        NOTIFYICONDATAW nid;
-        memset(&nid, 0, sizeof(NOTIFYICONDATAW));
-        nid.cbSize = sizeof(NOTIFYICONDATAW);
-        nid.hWnd = g_hMainWnd;
-        nid.uID = TRAY_ID_RAM;
-        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-        nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = hNewRam;
-
-        swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
-            GetResString(IDS_TRAY_TIP_RAM_FMT),
-            g_LastMemPct, g_LastUsedRamGb, g_LastTotalRamGb,
-            topRam[0].szName[0] ? topRam[0].szName : L"-", (UINT)(topRam[0].value > 0.0 ? topRam[0].value : 0.0),
-            topRam[1].szName[0] ? topRam[1].szName : L"-", (UINT)(topRam[1].value > 0.0 ? topRam[1].value : 0.0),
-            topRam[2].szName[0] ? topRam[2].szName : L"-", (UINT)(topRam[2].value > 0.0 ? topRam[2].value : 0.0),
-            topRam[3].szName[0] ? topRam[3].szName : L"-", (UINT)(topRam[3].value > 0.0 ? topRam[3].value : 0.0));
-
-        UpsertSingleTrayIcon(&nid, &g_bTrayRamCreated);
-
-        if (g_hIconRam) DestroyIcon(g_hIconRam);
-        g_hIconRam = hNewRam;
-    }
-
-    // 3. Icône GPU : Cyan électrique (Base: #06B6D4, Pic: #67E8F9, Alerte: #EF4444)
-    // Au survol souris : affiche le total GPU et le Top 4 des processus les plus gourmands en GPU
     HICON hNewGpu = CreateHistoryGraphIcon(g_TrayGpuHistory, TRAY_HISTORY_POINTS, 0xFF06B6D4, 0xFF67E8F9, 0xFFEF4444);
-    if (hNewGpu) {
-        NOTIFYICONDATAW nid;
-        memset(&nid, 0, sizeof(NOTIFYICONDATAW));
-        nid.cbSize = sizeof(NOTIFYICONDATAW);
-        nid.hWnd = g_hMainWnd;
-        nid.uID = TRAY_ID_GPU;
-        nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-        nid.uCallbackMessage = WM_TRAYICON;
-        nid.hIcon = hNewGpu;
 
-        swprintf_s(nid.szTip, sizeof(nid.szTip) / sizeof(WCHAR),
-            L"GPU : %.1f %%\n1. %.11s: %.1f%%\n2. %.11s: %.1f%%\n3. %.11s: %.1f%%\n4. %.11s: %.1f%%",
-            g_LastGpuPct,
-            topGpu[0].szName[0] ? topGpu[0].szName : L"-", (topGpu[0].value > 0.0) ? topGpu[0].value : 0.0,
-            topGpu[1].szName[0] ? topGpu[1].szName : L"-", (topGpu[1].value > 0.0) ? topGpu[1].value : 0.0,
-            topGpu[2].szName[0] ? topGpu[2].szName : L"-", (topGpu[2].value > 0.0) ? topGpu[2].value : 0.0,
-            topGpu[3].szName[0] ? topGpu[3].szName : L"-", (topGpu[3].value > 0.0) ? topGpu[3].value : 0.0);
+    EnterCriticalSection(&g_csTray);
+    BOOL bKeepForceReset = bForceReset || g_TrayPending.bForceReset;
+    DestroyPayloadIcons(&g_TrayPending);
 
-        UpsertSingleTrayIcon(&nid, &g_bTrayGpuCreated);
+    g_TrayPending.bHasUpdate = TRUE;
+    g_TrayPending.bForceReset = bKeepForceReset;
+    g_TrayPending.hCpu = hNewCpu;
+    g_TrayPending.hRam = hNewRam;
+    g_TrayPending.hGpu = hNewGpu;
 
-        if (g_hIconGpu) DestroyIcon(g_hIconGpu);
-        g_hIconGpu = hNewGpu;
-    }
+    swprintf_s(g_TrayPending.szTipCpu, sizeof(g_TrayPending.szTipCpu) / sizeof(WCHAR),
+        L"CPU : %.1f %%\n1. %.11s: %.1f%%\n2. %.11s: %.1f%%\n3. %.11s: %.1f%%\n4. %.11s: %.1f%%",
+        g_LastCpuPct,
+        topCpu[0].szName[0] ? topCpu[0].szName : L"-", (topCpu[0].value > 0.0) ? topCpu[0].value : 0.0,
+        topCpu[1].szName[0] ? topCpu[1].szName : L"-", (topCpu[1].value > 0.0) ? topCpu[1].value : 0.0,
+        topCpu[2].szName[0] ? topCpu[2].szName : L"-", (topCpu[2].value > 0.0) ? topCpu[2].value : 0.0,
+        topCpu[3].szName[0] ? topCpu[3].szName : L"-", (topCpu[3].value > 0.0) ? topCpu[3].value : 0.0);
 
-    if (g_bTrayCpuCreated && g_bTrayRamCreated && g_bTrayGpuCreated) {
+    swprintf_s(g_TrayPending.szTipRam, sizeof(g_TrayPending.szTipRam) / sizeof(WCHAR),
+        GetResString(IDS_TRAY_TIP_RAM_FMT),
+        g_LastMemPct, g_LastUsedRamGb, g_LastTotalRamGb,
+        topRam[0].szName[0] ? topRam[0].szName : L"-", (UINT)(topRam[0].value > 0.0 ? topRam[0].value : 0.0),
+        topRam[1].szName[0] ? topRam[1].szName : L"-", (UINT)(topRam[1].value > 0.0 ? topRam[1].value : 0.0),
+        topRam[2].szName[0] ? topRam[2].szName : L"-", (UINT)(topRam[2].value > 0.0 ? topRam[2].value : 0.0),
+        topRam[3].szName[0] ? topRam[3].szName : L"-", (UINT)(topRam[3].value > 0.0 ? topRam[3].value : 0.0));
+
+    swprintf_s(g_TrayPending.szTipGpu, sizeof(g_TrayPending.szTipGpu) / sizeof(WCHAR),
+        L"GPU : %.1f %%\n1. %.11s: %.1f%%\n2. %.11s: %.1f%%\n3. %.11s: %.1f%%\n4. %.11s: %.1f%%",
+        g_LastGpuPct,
+        topGpu[0].szName[0] ? topGpu[0].szName : L"-", (topGpu[0].value > 0.0) ? topGpu[0].value : 0.0,
+        topGpu[1].szName[0] ? topGpu[1].szName : L"-", (topGpu[1].value > 0.0) ? topGpu[1].value : 0.0,
+        topGpu[2].szName[0] ? topGpu[2].szName : L"-", (topGpu[2].value > 0.0) ? topGpu[2].value : 0.0,
+        topGpu[3].szName[0] ? topGpu[3].szName : L"-", (topGpu[3].value > 0.0) ? topGpu[3].value : 0.0);
+    LeaveCriticalSection(&g_csTray);
+
+    SetEvent(g_hTrayEvent);
+
+    if (InterlockedCompareExchange(&g_lTrayNeedsRetry, 0, 0) != 0) {
+        SetTimer(g_hMainWnd, IDT_TRAY_RETRY_TIMER, 1000, NULL);
+    } else {
         KillTimer(g_hMainWnd, IDT_TRAY_RETRY_TIMER);
     }
 }
@@ -1146,64 +1376,21 @@ static void SyncTrayIconsInternal(BOOL bUpdateHistory, double cpuPct, double mem
 // Mise à jour des 3 icônes distinctes d'historique (CPU, RAM, GPU) dans la barre des tâches
 // avec affichage dynamique des 4 premiers consommateurs au survol de la souris
 void UpdateTrayIcons(double cpuPct, double memPct, double gpuPct, double usedRamGb, double totalRamGb) {
-    SyncTrayIconsInternal(TRUE, cpuPct, memPct, gpuPct, usedRamGb, totalRamGb);
+    SyncTrayIconsInternal(TRUE, FALSE, cpuPct, memPct, gpuPct, usedRamGb, totalRamGb);
 }
 
-// Recréation des icônes Tray suite au redémarrage d'explorer.exe (TaskbarCreated)
+// Recréation des icônes Tray suite au redémarrage d'explorer.exe, déverrouillage ou sortie de veille
 void RecreateTrayIcons(BOOL bResetCreatedFlags) {
     if (!g_hMainWnd) return;
-
-    if (bResetCreatedFlags) {
-        g_bTrayCpuCreated = FALSE;
-        g_bTrayRamCreated = FALSE;
-        g_bTrayGpuCreated = FALSE;
-    }
-
-    SyncTrayIconsInternal(FALSE, g_LastCpuPct, g_LastMemPct, g_LastGpuPct, g_LastUsedRamGb, g_LastTotalRamGb);
-
-    if (!g_bTrayCpuCreated || !g_bTrayRamCreated || !g_bTrayGpuCreated) {
+    SyncTrayIconsInternal(FALSE, bResetCreatedFlags, g_LastCpuPct, g_LastMemPct, g_LastGpuPct, g_LastUsedRamGb, g_LastTotalRamGb);
+    if (InterlockedCompareExchange(&g_lTrayNeedsRetry, 0, 0) != 0 || bResetCreatedFlags) {
         SetTimer(g_hMainWnd, IDT_TRAY_RETRY_TIMER, 1000, NULL);
-    } else {
-        KillTimer(g_hMainWnd, IDT_TRAY_RETRY_TIMER);
     }
 }
 
 // Suppression propre des 3 icônes de la barre des tâches
 void RemoveAllTrayIcons(void) {
-    NOTIFYICONDATAW nid;
-    memset(&nid, 0, sizeof(NOTIFYICONDATAW));
-    nid.cbSize = sizeof(NOTIFYICONDATAW);
-    nid.hWnd = g_hMainWnd;
-
-    if (g_bTrayCpuCreated) {
-        nid.uID = TRAY_ID_CPU;
-        Shell_NotifyIconW(NIM_DELETE, &nid);
-        g_bTrayCpuCreated = FALSE;
-    }
-    if (g_hIconCpu) {
-        DestroyIcon(g_hIconCpu);
-        g_hIconCpu = NULL;
-    }
-
-    if (g_bTrayRamCreated) {
-        nid.uID = TRAY_ID_RAM;
-        Shell_NotifyIconW(NIM_DELETE, &nid);
-        g_bTrayRamCreated = FALSE;
-    }
-    if (g_hIconRam) {
-        DestroyIcon(g_hIconRam);
-        g_hIconRam = NULL;
-    }
-
-    if (g_bTrayGpuCreated) {
-        nid.uID = TRAY_ID_GPU;
-        Shell_NotifyIconW(NIM_DELETE, &nid);
-        g_bTrayGpuCreated = FALSE;
-    }
-    if (g_hIconGpu) {
-        DestroyIcon(g_hIconGpu);
-        g_hIconGpu = NULL;
-    }
+    StopTrayWorker();
 }
 
 // Vérification de signature / métadonnées Microsoft dans les ressources PE (chargement dynamique sans -lversion)
@@ -3124,6 +3311,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
 
     InitGpuTelemetry();
+    StartTrayWorker();
     RefreshProcessList();
 
     if (g_bAutoRefresh) {
@@ -3154,18 +3342,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) {
     // Réactivation inter-instance si l'utilisateur relance taskmgr.exe alors qu'il tourne déjà
     if (g_uMsgRestoreInstance != 0 && message == g_uMsgRestoreInstance) {
-        if (g_bInTray) {
-            ShowWindow(hWnd, SW_RESTORE);
-            SetForegroundWindow(hWnd);
-            g_bInTray = FALSE;
+        if (g_bInTray || IsIconic(hWnd)) {
+            ShowWindow(hWnd, IsIconic(hWnd) ? SW_RESTORE : SW_SHOW);
         } else {
-            if (IsIconic(hWnd)) {
-                ShowWindow(hWnd, SW_RESTORE);
-            } else {
-                ShowWindow(hWnd, SW_SHOW);
-            }
-            SetForegroundWindow(hWnd);
+            ShowWindow(hWnd, SW_SHOW);
         }
+        SetForegroundWindow(hWnd);
+        g_bInTray = FALSE;
         RefreshProcessList();
         return 0;
     }
@@ -3182,6 +3365,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         g_uMsgTaskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
         AllowMessageThroughUIPI(hWnd, g_uMsgTaskbarCreated);
         AllowMessageThroughUIPI(hWnd, g_uMsgRestoreInstance);
+
+        // Enregistrement dynamique aux notifications de verrouillage/déverrouillage de session Windows
+        HMODULE hWts = LoadLibraryW(L"wtsapi32.dll");
+        if (hWts) {
+            typedef BOOL (WINAPI *pfnWTSRegisterSessionNotification)(HWND, DWORD);
+            pfnWTSRegisterSessionNotification pReg =
+                (pfnWTSRegisterSessionNotification)(void*)GetProcAddress(hWts, "WTSRegisterSessionNotification");
+            if (pReg && pReg(hWnd, NOTIFY_FOR_THIS_SESSION)) {
+                g_bWtsRegistered = TRUE;
+            }
+            FreeLibrary(hWts);
+        }
         // Récupération de la police officielle Windows Segoe UI via les métriques système (au lieu de MS Sans Serif / 98)
         NONCLIENTMETRICSW ncm = { 0 };
         ncm.cbSize = sizeof(NONCLIENTMETRICSW);
@@ -3376,6 +3571,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
     case WM_SIZE: {
         int width = LOWORD(lParam);
         int height = HIWORD(lParam);
+        if (wParam == SIZE_MINIMIZED || width <= 0 || height <= 0) {
+            return 0;
+        }
 
         LayoutToolbarRightButtons(width);
 
@@ -3416,6 +3614,49 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         return 0;
     }
 
+    case WM_WTSSESSION_CHANGE:
+        if (wParam == WTS_SESSION_LOCK || wParam == WTS_CONSOLE_DISCONNECT || wParam == WTS_REMOTE_DISCONNECT) {
+            InterlockedExchange(&g_lSessionLocked, 1);
+        } else if (wParam == WTS_SESSION_UNLOCK || wParam == WTS_CONSOLE_CONNECT || wParam == WTS_REMOTE_CONNECT) {
+            InterlockedExchange(&g_lSessionLocked, 0);
+            g_LastRefreshTime = 0;
+            g_LastSysIdleTime = 0;
+            g_LastSysKernelTime = 0;
+            g_LastSysUserTime = 0;
+            InterlockedExchange(&g_lGpuNeedsReset, 1);
+            if (g_bAutoRefresh) {
+                SetTimer(hWnd, IDT_REFRESH_TIMER, REFRESH_INTERVAL_MS, NULL);
+            }
+            RecreateTrayIcons(TRUE);
+            RefreshProcessList();
+        }
+        return 0;
+
+    case WM_POWERBROADCAST:
+        if (wParam == PBT_APMSUSPEND) {
+            InterlockedExchange(&g_lSystemSuspended, 1);
+            return TRUE;
+        }
+        if (wParam == PBT_APMRESUMEAUTOMATIC || wParam == PBT_APMRESUMESUSPEND) {
+            InterlockedExchange(&g_lSystemSuspended, 0);
+            g_LastRefreshTime = 0;
+            g_LastSysIdleTime = 0;
+            g_LastSysKernelTime = 0;
+            g_LastSysUserTime = 0;
+            InterlockedExchange(&g_lGpuNeedsReset, 1);
+            if (g_bAutoRefresh) {
+                SetTimer(hWnd, IDT_REFRESH_TIMER, REFRESH_INTERVAL_MS, NULL);
+            }
+            RecreateTrayIcons(TRUE);
+            RefreshProcessList();
+            return TRUE;
+        }
+        break;
+
+    case WM_DISPLAYCHANGE:
+        RecreateTrayIcons(FALSE);
+        return 0;
+
     case WM_CLOSE:
         // Lors de la fermeture, réduire l'application en System Tray au lieu de la quitter
         ShowWindow(hWnd, SW_HIDE);
@@ -3434,6 +3675,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             }
             SetForegroundWindow(hWnd);
             g_bInTray = FALSE;
+            RefreshProcessList();
         } else if (lParam == WM_RBUTTONUP) {
             // Clic droit pour menu contextuel du Tray avec détails de la ressource cliquée
             POINT pt;
@@ -3459,6 +3701,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
             SetForegroundWindow(hWnd);
             TrackPopupMenu(hTrayMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
+            PostMessageW(hWnd, WM_NULL, 0, 0);
             DestroyMenu(hTrayMenu);
         }
         return 0;
@@ -3477,6 +3720,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
             }
             SetForegroundWindow(hWnd);
             g_bInTray = FALSE;
+            RefreshProcessList();
             break;
 
         case IDM_TRAY_EXIT:
@@ -3678,9 +3922,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
 
     case WM_TIMER:
         if (wParam == IDT_REFRESH_TIMER) {
-            RefreshProcessList();
+            if (InterlockedCompareExchange(&g_lSystemSuspended, 0, 0) == 0) {
+                RefreshProcessList();
+            }
         } else if (wParam == IDT_TRAY_RETRY_TIMER) {
-            RecreateTrayIcons(FALSE);
+            if (InterlockedCompareExchange(&g_lSystemSuspended, 0, 0) == 0 &&
+                InterlockedCompareExchange(&g_lSessionLocked, 0, 0) == 0) {
+                RecreateTrayIcons(FALSE);
+            }
         }
         return 0;
 
@@ -3776,6 +4025,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
                     POINT pt;
                     GetCursorPos(&pt);
                     TrackPopupMenu(hPopup, TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
+                    PostMessageW(hWnd, WM_NULL, 0, 0);
                     DestroyMenu(hSubPriority);
                     DestroyMenu(hPopup);
                 }
@@ -3825,6 +4075,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam) 
         return 0;
 
     case WM_DESTROY:
+        if (g_bWtsRegistered) {
+            HMODULE hWts = GetModuleHandleW(L"wtsapi32.dll");
+            if (!hWts) hWts = LoadLibraryW(L"wtsapi32.dll");
+            if (hWts) {
+                typedef BOOL (WINAPI *pfnWTSUnRegisterSessionNotification)(HWND);
+                pfnWTSUnRegisterSessionNotification pUnreg =
+                    (pfnWTSUnRegisterSessionNotification)(void*)GetProcAddress(hWts, "WTSUnRegisterSessionNotification");
+                if (pUnreg) pUnreg(hWnd);
+            }
+            g_bWtsRegistered = FALSE;
+        }
         if (g_hListTooltip) {
             DestroyWindow(g_hListTooltip);
             g_hListTooltip = NULL;
@@ -4131,121 +4392,140 @@ static BOOL ParseGpuEngineInstanceName(const WCHAR *szName, DWORD *pOutPid, WCHA
     return TRUE;
 }
 
-void InitGpuTelemetry(void) {
-    if (g_bGpuPdhReady) return;
+typedef struct {
+    HMODULE hPdhDll;
+    pfnPdhOpenQueryW pfnOpenQueryW;
+    pfnPdhAddEnglishCounterW pfnAddEnglishCounterW;
+    pfnPdhCollectQueryData pfnCollectQueryData;
+    pfnPdhGetFormattedCounterArrayW pfnGetFormattedCounterArrayW;
+    pfnPdhCloseQuery pfnCloseQuery;
+    PDH_HQUERY hQuery;
+    PDH_HCOUNTER hCounter;
+    BOOL bReady;
+    BOOL bBaselineCollected;
+    ULONGLONG lastCollectTick;
+    BYTE *pBuf;
+    DWORD bufCap;
+    int consecutiveErrors;
+} GpuWorkerState;
 
-    g_hPdhDll = LoadLibraryW(L"pdh.dll");
-    if (!g_hPdhDll) return;
+static void ShutdownGpuPdhLocal(GpuWorkerState *pSt) {
+    if (pSt->hQuery && pSt->pfnCloseQuery) {
+        pSt->pfnCloseQuery(pSt->hQuery);
+    }
+    pSt->hQuery = NULL;
+    pSt->hCounter = NULL;
+    pSt->bReady = FALSE;
+    pSt->bBaselineCollected = FALSE;
+    pSt->consecutiveErrors = 0;
 
-    g_pfnPdhOpenQueryW = (pfnPdhOpenQueryW)(void*)GetProcAddress(g_hPdhDll, "PdhOpenQueryW");
-    g_pfnPdhAddEnglishCounterW = (pfnPdhAddEnglishCounterW)(void*)GetProcAddress(g_hPdhDll, "PdhAddEnglishCounterW");
-    g_pfnPdhCollectQueryData = (pfnPdhCollectQueryData)(void*)GetProcAddress(g_hPdhDll, "PdhCollectQueryData");
-    g_pfnPdhGetFormattedCounterArrayW = (pfnPdhGetFormattedCounterArrayW)(void*)GetProcAddress(g_hPdhDll, "PdhGetFormattedCounterArrayW");
-    g_pfnPdhCloseQuery = (pfnPdhCloseQuery)(void*)GetProcAddress(g_hPdhDll, "PdhCloseQuery");
+    if (pSt->pBuf) {
+        free(pSt->pBuf);
+        pSt->pBuf = NULL;
+        pSt->bufCap = 0;
+    }
+    if (pSt->hPdhDll) {
+        FreeLibrary(pSt->hPdhDll);
+        pSt->hPdhDll = NULL;
+    }
+    pSt->pfnOpenQueryW = NULL;
+    pSt->pfnAddEnglishCounterW = NULL;
+    pSt->pfnCollectQueryData = NULL;
+    pSt->pfnGetFormattedCounterArrayW = NULL;
+    pSt->pfnCloseQuery = NULL;
+}
 
-    if (!g_pfnPdhOpenQueryW || !g_pfnPdhAddEnglishCounterW || !g_pfnPdhCollectQueryData ||
-        !g_pfnPdhGetFormattedCounterArrayW || !g_pfnPdhCloseQuery) {
-        ShutdownGpuTelemetry();
+static void InitGpuPdhLocal(GpuWorkerState *pSt) {
+    if (pSt->bReady) return;
+
+    pSt->hPdhDll = LoadLibraryW(L"pdh.dll");
+    if (!pSt->hPdhDll) return;
+
+    pSt->pfnOpenQueryW = (pfnPdhOpenQueryW)(void*)GetProcAddress(pSt->hPdhDll, "PdhOpenQueryW");
+    pSt->pfnAddEnglishCounterW = (pfnPdhAddEnglishCounterW)(void*)GetProcAddress(pSt->hPdhDll, "PdhAddEnglishCounterW");
+    pSt->pfnCollectQueryData = (pfnPdhCollectQueryData)(void*)GetProcAddress(pSt->hPdhDll, "PdhCollectQueryData");
+    pSt->pfnGetFormattedCounterArrayW = (pfnPdhGetFormattedCounterArrayW)(void*)GetProcAddress(pSt->hPdhDll, "PdhGetFormattedCounterArrayW");
+    pSt->pfnCloseQuery = (pfnPdhCloseQuery)(void*)GetProcAddress(pSt->hPdhDll, "PdhCloseQuery");
+
+    if (!pSt->pfnOpenQueryW || !pSt->pfnAddEnglishCounterW || !pSt->pfnCollectQueryData ||
+        !pSt->pfnGetFormattedCounterArrayW || !pSt->pfnCloseQuery) {
+        ShutdownGpuPdhLocal(pSt);
         return;
     }
 
-    if (g_pfnPdhOpenQueryW(NULL, 0, &g_hGpuQuery) != ERROR_SUCCESS || !g_hGpuQuery) {
-        ShutdownGpuTelemetry();
+    if (pSt->pfnOpenQueryW(NULL, 0, &pSt->hQuery) != ERROR_SUCCESS || !pSt->hQuery) {
+        ShutdownGpuPdhLocal(pSt);
         return;
     }
 
-    if (g_pfnPdhAddEnglishCounterW(g_hGpuQuery, L"\\GPU Engine(*)\\Utilization Percentage", 0, &g_hGpuCounter) != ERROR_SUCCESS || !g_hGpuCounter) {
-        ShutdownGpuTelemetry();
+    if (pSt->pfnAddEnglishCounterW(pSt->hQuery, L"\\GPU Engine(*)\\Utilization Percentage", 0, &pSt->hCounter) != ERROR_SUCCESS || !pSt->hCounter) {
+        ShutdownGpuPdhLocal(pSt);
         return;
     }
 
-    g_bGpuPdhReady = TRUE;
-    // Premier échantillon de référence (les compteurs de taux PDH exigent 2 collectes)
-    if (g_pfnPdhCollectQueryData(g_hGpuQuery) == ERROR_SUCCESS) {
-        g_bGpuBaselineCollected = TRUE;
-        g_LastGpuCollectTick = GetTickCount64();
+    pSt->bReady = TRUE;
+    if (pSt->pfnCollectQueryData(pSt->hQuery) == ERROR_SUCCESS) {
+        pSt->bBaselineCollected = TRUE;
+        pSt->lastCollectTick = GetTickCount64();
     }
 }
 
-void ShutdownGpuTelemetry(void) {
-    if (g_hGpuQuery && g_pfnPdhCloseQuery) {
-        g_pfnPdhCloseQuery(g_hGpuQuery);
-    }
-    g_hGpuQuery = NULL;
-    g_hGpuCounter = NULL;
-    g_bGpuPdhReady = FALSE;
-    g_bGpuBaselineCollected = FALSE;
-
-    if (g_pGpuPdhBuf) {
-        free(g_pGpuPdhBuf);
-        g_pGpuPdhBuf = NULL;
-        g_GpuPdhBufCap = 0;
-    }
-    if (g_hPdhDll) {
-        FreeLibrary(g_hPdhDll);
-        g_hPdhDll = NULL;
-    }
-    g_pfnPdhOpenQueryW = NULL;
-    g_pfnPdhAddEnglishCounterW = NULL;
-    g_pfnPdhCollectQueryData = NULL;
-    g_pfnPdhGetFormattedCounterArrayW = NULL;
-    g_pfnPdhCloseQuery = NULL;
-}
-
-void CollectGpuTelemetry(ULONGLONG curTick) {
-    if (!g_bGpuPdhReady || !g_hGpuQuery || !g_hGpuCounter) {
-        g_CachedGpuProcCount = 0;
-        g_CachedTotalGpuPct = 0.0;
+static void CollectGpuPdhLocal(GpuWorkerState *pSt, ULONGLONG curTick) {
+    if (!pSt->bReady || !pSt->hQuery || !pSt->hCounter) {
         return;
     }
 
-    // Éviter de rééchantillonner à <750ms lors des frappes rapides dans le filtre
-    if (g_bGpuBaselineCollected && g_LastGpuCollectTick > 0 &&
-        curTick >= g_LastGpuCollectTick &&
-        (curTick - g_LastGpuCollectTick) < GPU_SAMPLE_MIN_INTERVAL_MS) {
+    if (pSt->bBaselineCollected && pSt->lastCollectTick > 0 &&
+        curTick >= pSt->lastCollectTick &&
+        (curTick - pSt->lastCollectTick) < GPU_SAMPLE_MIN_INTERVAL_MS) {
         return;
     }
 
-    if (g_pfnPdhCollectQueryData(g_hGpuQuery) != ERROR_SUCCESS) {
+    if (pSt->pfnCollectQueryData(pSt->hQuery) != ERROR_SUCCESS) {
+        pSt->consecutiveErrors++;
         return;
     }
-    g_LastGpuCollectTick = curTick;
+    pSt->lastCollectTick = curTick;
 
-    if (!g_bGpuBaselineCollected) {
-        g_bGpuBaselineCollected = TRUE;
-        g_CachedGpuProcCount = 0;
-        g_CachedTotalGpuPct = 0.0;
+    if (!pSt->bBaselineCollected) {
+        pSt->bBaselineCollected = TRUE;
+        pSt->consecutiveErrors = 0;
         return;
     }
 
     DWORD bufSize = 0;
     DWORD itemCount = 0;
-    PDH_STATUS status = g_pfnPdhGetFormattedCounterArrayW(g_hGpuCounter, PDH_FMT_DOUBLE, &bufSize, &itemCount, NULL);
+    PDH_STATUS status = pSt->pfnGetFormattedCounterArrayW(pSt->hCounter, PDH_FMT_DOUBLE, &bufSize, &itemCount, NULL);
 
     int attempts = 0;
     while ((DWORD)status == PDH_MORE_DATA && bufSize > 0 && attempts < 3) {
         attempts++;
-        if (bufSize > g_GpuPdhBufCap) {
-            BYTE *pNew = (BYTE*)realloc(g_pGpuPdhBuf, bufSize);
+        if (bufSize > pSt->bufCap) {
+            BYTE *pNew = (BYTE*)realloc(pSt->pBuf, bufSize);
             if (!pNew) return;
-            g_pGpuPdhBuf = pNew;
-            g_GpuPdhBufCap = bufSize;
+            pSt->pBuf = pNew;
+            pSt->bufCap = bufSize;
         }
         itemCount = 0;
-        status = g_pfnPdhGetFormattedCounterArrayW(
-            g_hGpuCounter,
+        status = pSt->pfnGetFormattedCounterArrayW(
+            pSt->hCounter,
             PDH_FMT_DOUBLE,
             &bufSize,
             &itemCount,
-            (PPDH_FMT_COUNTERVALUE_ITEM_W)g_pGpuPdhBuf
+            (PPDH_FMT_COUNTERVALUE_ITEM_W)pSt->pBuf
         );
     }
 
-    if (status != ERROR_SUCCESS || itemCount == 0 || !g_pGpuPdhBuf) {
+    if (status != ERROR_SUCCESS || itemCount == 0 || !pSt->pBuf) {
+        pSt->consecutiveErrors++;
+        EnterCriticalSection(&g_csGpuCache);
         g_CachedGpuProcCount = 0;
         g_CachedTotalGpuPct = 0.0;
+        LeaveCriticalSection(&g_csGpuCache);
         return;
     }
+
+    pSt->consecutiveErrors = 0;
 
     GpuEngineTotal engines[MAX_GPU_ENGINES];
     int engineCount = 0;
@@ -4254,7 +4534,7 @@ void CollectGpuTelemetry(ULONGLONG curTick) {
     if (!pairs) return;
     int pairCount = 0;
 
-    PPDH_FMT_COUNTERVALUE_ITEM_W items = (PPDH_FMT_COUNTERVALUE_ITEM_W)g_pGpuPdhBuf;
+    PPDH_FMT_COUNTERVALUE_ITEM_W items = (PPDH_FMT_COUNTERVALUE_ITEM_W)pSt->pBuf;
     for (DWORD i = 0; i < itemCount; i++) {
         DWORD cstat = items[i].FmtValue.CStatus;
         if (cstat != PDH_CSTATUS_VALID_DATA && cstat != PDH_CSTATUS_NEW_DATA) {
@@ -4271,7 +4551,6 @@ void CollectGpuTelemetry(ULONGLONG curTick) {
             continue;
         }
 
-        // Trouver ou créer le moteur matériel (luid + phys + eng)
         int eIdx = -1;
         for (int e = 0; e < engineCount; e++) {
             if (wcscmp(engines[e].szEngineKey, szEngineKey) == 0) {
@@ -4287,7 +4566,6 @@ void CollectGpuTelemetry(ULONGLONG curTick) {
         }
         engines[eIdx].totalPercent += val;
 
-        // Cumuler par couple (PID, moteur)
         int pIdx = -1;
         for (int p = 0; p < pairCount; p++) {
             if (pairs[p].pid == pid && pairs[p].engineIdx == eIdx) {
@@ -4307,46 +4585,121 @@ void CollectGpuTelemetry(ULONGLONG curTick) {
         }
     }
 
-    // Chaque processus affiche le maximum de ses moteurs GPU utilisés (comportement natif Windows)
-    g_CachedGpuProcCount = 0;
-    for (int p = 0; p < pairCount; p++) {
-        double pVal = pairs[p].percent;
-        if (pVal > 100.0) pVal = 100.0;
+    GpuProcSample *localProcs = (GpuProcSample*)calloc(MAX_GPU_PROC_SAMPLES, sizeof(GpuProcSample));
+    int localProcCount = 0;
+    if (localProcs) {
+        for (int p = 0; p < pairCount; p++) {
+            double pVal = pairs[p].percent;
+            if (pVal > 100.0) pVal = 100.0;
 
-        int found = -1;
-        for (int c = 0; c < g_CachedGpuProcCount; c++) {
-            if (g_CachedGpuProcs[c].pid == pairs[p].pid) {
-                found = c;
-                break;
+            int found = -1;
+            for (int c = 0; c < localProcCount; c++) {
+                if (localProcs[c].pid == pairs[p].pid) {
+                    found = c;
+                    break;
+                }
             }
-        }
-        if (found < 0) {
-            if (g_CachedGpuProcCount < MAX_GPU_PROC_SAMPLES) {
-                g_CachedGpuProcs[g_CachedGpuProcCount].pid = pairs[p].pid;
-                g_CachedGpuProcs[g_CachedGpuProcCount].gpuPercent = pVal;
-                g_CachedGpuProcCount++;
+            if (found < 0) {
+                if (localProcCount < MAX_GPU_PROC_SAMPLES) {
+                    localProcs[localProcCount].pid = pairs[p].pid;
+                    localProcs[localProcCount].gpuPercent = pVal;
+                    localProcCount++;
+                }
+            } else if (pVal > localProcs[found].gpuPercent) {
+                localProcs[found].gpuPercent = pVal;
             }
-        } else if (pVal > g_CachedGpuProcs[found].gpuPercent) {
-            g_CachedGpuProcs[found].gpuPercent = pVal;
         }
     }
 
-    // Utilisation GPU globale = maximum parmi tous les moteurs GPU matériels (plafonné à 100%)
     double maxEngine = 0.0;
     for (int e = 0; e < engineCount; e++) {
         double eVal = engines[e].totalPercent;
         if (eVal > 100.0) eVal = 100.0;
         if (eVal > maxEngine) maxEngine = eVal;
     }
-    g_CachedTotalGpuPct = maxEngine;
 
+    EnterCriticalSection(&g_csGpuCache);
+    if (localProcs) {
+        memcpy(g_CachedGpuProcs, localProcs, (size_t)localProcCount * sizeof(GpuProcSample));
+        g_CachedGpuProcCount = localProcCount;
+    }
+    g_CachedTotalGpuPct = maxEngine;
+    LeaveCriticalSection(&g_csGpuCache);
+
+    if (localProcs) free(localProcs);
     free(pairs);
 }
 
-double LookupCachedGpuPercent(DWORD pid) {
-    for (int i = 0; i < g_CachedGpuProcCount; i++) {
-        if (g_CachedGpuProcs[i].pid == pid) {
-            return g_CachedGpuProcs[i].gpuPercent;
+static DWORD WINAPI GpuWorkerThreadProc(LPVOID lpParam) {
+    (void)lpParam;
+    GpuWorkerState st;
+    memset(&st, 0, sizeof(st));
+    InitGpuPdhLocal(&st);
+
+    HANDLE waitHandles[2] = { g_hGpuStopEvent, g_hGpuEvent };
+    for (;;) {
+        DWORD dwWait = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);
+        if (dwWait == WAIT_OBJECT_0 || dwWait == WAIT_FAILED) {
+            break;
+        }
+
+        if (InterlockedCompareExchange(&g_lSystemSuspended, 0, 0) != 0) {
+            continue;
+        }
+
+        if (InterlockedExchange(&g_lGpuNeedsReset, 0) != 0 || !st.bReady || st.consecutiveErrors >= 3) {
+            ShutdownGpuPdhLocal(&st);
+            InitGpuPdhLocal(&st);
+        }
+
+        CollectGpuPdhLocal(&st, GetTickCount64());
+    }
+
+    ShutdownGpuPdhLocal(&st);
+    return 0;
+}
+
+void InitGpuTelemetry(void) {
+    if (g_hGpuThread) return;
+    if (!g_bGpuCsInit) {
+        InitializeCriticalSection(&g_csGpuCache);
+        g_bGpuCsInit = TRUE;
+    }
+    if (!g_hGpuEvent) g_hGpuEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (!g_hGpuStopEvent) g_hGpuStopEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
+    if (g_hGpuEvent && g_hGpuStopEvent) {
+        g_hGpuThread = CreateThread(NULL, 0, GpuWorkerThreadProc, NULL, 0, NULL);
+        if (g_hGpuThread) {
+            SetEvent(g_hGpuEvent);
+        }
+    }
+}
+
+void ShutdownGpuTelemetry(void) {
+    if (g_hGpuThread) {
+        if (g_hGpuStopEvent) SetEvent(g_hGpuStopEvent);
+        WaitForSingleObject(g_hGpuThread, 1500);
+        CloseHandle(g_hGpuThread);
+        g_hGpuThread = NULL;
+    }
+    if (g_bGpuCsInit) {
+        DeleteCriticalSection(&g_csGpuCache);
+        g_bGpuCsInit = FALSE;
+    }
+    if (g_hGpuEvent) { CloseHandle(g_hGpuEvent); g_hGpuEvent = NULL; }
+    if (g_hGpuStopEvent) { CloseHandle(g_hGpuStopEvent); g_hGpuStopEvent = NULL; }
+}
+
+void TriggerGpuTelemetrySample(void) {
+    if (g_hGpuEvent && InterlockedCompareExchange(&g_lSystemSuspended, 0, 0) == 0) {
+        SetEvent(g_hGpuEvent);
+    }
+}
+
+double LookupGpuPercentSnapshot(DWORD pid, const GpuProcSample *samples, int count) {
+    for (int i = 0; i < count; i++) {
+        if (samples[i].pid == pid) {
+            return samples[i].gpuPercent;
         }
     }
     return 0.0;
@@ -4354,6 +4707,21 @@ double LookupCachedGpuPercent(DWORD pid) {
 
 // Rafraîchissement différentiel optimisé SANS scintillement
 void RefreshProcessList(void) {
+    static GpuProcSample s_GpuSnapshot[MAX_GPU_PROC_SAMPLES];
+    int gpuSnapCount = 0;
+    double totalGpuPercent = 0.0;
+
+    if (g_bGpuCsInit) {
+        EnterCriticalSection(&g_csGpuCache);
+        gpuSnapCount = g_CachedGpuProcCount;
+        if (gpuSnapCount > 0) {
+            memcpy(s_GpuSnapshot, g_CachedGpuProcs, (size_t)gpuSnapCount * sizeof(GpuProcSample));
+        }
+        totalGpuPercent = g_CachedTotalGpuPct;
+        LeaveCriticalSection(&g_csGpuCache);
+    }
+    TriggerGpuTelemetrySample();
+
     FILETIME idleTime, kernelTime, userTime;
     GetSystemTimes(&idleTime, &kernelTime, &userTime);
 
@@ -4361,11 +4729,11 @@ void RefreshProcessList(void) {
     ULONGLONG curSysKernel = FileTimeToUInt64(&kernelTime);
     ULONGLONG curSysUser = FileTimeToUInt64(&userTime);
 
-    ULONGLONG sysKernelDiff = (curSysKernel >= g_LastSysKernelTime) ? (curSysKernel - g_LastSysKernelTime) : 0;
-    ULONGLONG sysUserDiff   = (curSysUser >= g_LastSysUserTime) ? (curSysUser - g_LastSysUserTime) : 0;
+    ULONGLONG sysKernelDiff = (g_LastSysKernelTime > 0 && curSysKernel >= g_LastSysKernelTime) ? (curSysKernel - g_LastSysKernelTime) : 0;
+    ULONGLONG sysUserDiff   = (g_LastSysUserTime > 0 && curSysUser >= g_LastSysUserTime) ? (curSysUser - g_LastSysUserTime) : 0;
     ULONGLONG sysTotalDiff  = sysKernelDiff + sysUserDiff;
 
-    ULONGLONG sysIdleDiff   = (curSysIdle >= g_LastSysIdleTime) ? (curSysIdle - g_LastSysIdleTime) : 0;
+    ULONGLONG sysIdleDiff   = (g_LastSysIdleTime > 0 && curSysIdle >= g_LastSysIdleTime) ? (curSysIdle - g_LastSysIdleTime) : 0;
     double totalCpuPercent = 0.0;
     if (sysTotalDiff > 0) {
         totalCpuPercent = 100.0 * (1.0 - ((double)sysIdleDiff / (double)sysTotalDiff));
@@ -4380,10 +4748,8 @@ void RefreshProcessList(void) {
     ULONGLONG curTick = GetTickCount64();
     double timeDeltaSec = (g_LastRefreshTime > 0 && curTick > g_LastRefreshTime) ?
         ((double)(curTick - g_LastRefreshTime) / 1000.0) : 1.0;
-    if (timeDeltaSec <= 0.0) timeDeltaSec = 1.0;
+    if (timeDeltaSec <= 0.0 || timeDeltaSec > 30.0) timeDeltaSec = 1.0;
     g_LastRefreshTime = curTick;
-
-    CollectGpuTelemetry(curTick);
 
     HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
     if (hSnapshot == INVALID_HANDLE_VALUE) {
@@ -4425,13 +4791,18 @@ void RefreshProcessList(void) {
         ProcessHistory *hist = FindOrCreateHistory(pid);
 
         if (hProcess) {
-            // Chemin complet du binaire
-            DWORD pathSize = MAX_PATH;
-            QueryFullProcessImageNameW(hProcess, 0, proc->szFullPath, &pathSize);
-
-            // CPU %
+            // CPU % et détection de réutilisation de PID via ftCreate
             FILETIME ftCreate, ftExit, ftKernel, ftUser;
             if (GetProcessTimes(hProcess, &ftCreate, &ftExit, &ftKernel, &ftUser)) {
+                ULONGLONG curCreate = FileTimeToUInt64(&ftCreate);
+                if (hist && hist->createTime != 0 && hist->createTime != curCreate) {
+                    memset(hist, 0, sizeof(ProcessHistory));
+                    hist->pid = pid;
+                }
+                if (hist && hist->createTime == 0) {
+                    hist->createTime = curCreate;
+                }
+
                 ULONGLONG curProcKernel = FileTimeToUInt64(&ftKernel);
                 ULONGLONG curProcUser   = FileTimeToUInt64(&ftUser);
 
@@ -4447,6 +4818,17 @@ void RefreshProcessList(void) {
                 if (hist) {
                     hist->kernelTime = curProcKernel;
                     hist->userTime = curProcUser;
+                }
+            }
+
+            // Chemin complet du binaire (mis en cache par PID + createTime)
+            if (hist && hist->bPathCached) {
+                wcsncpy_s(proc->szFullPath, MAX_PATH, hist->szFullPath, _TRUNCATE);
+            } else {
+                DWORD pathSize = MAX_PATH;
+                if (QueryFullProcessImageNameW(hProcess, 0, proc->szFullPath, &pathSize) && hist) {
+                    wcsncpy_s(hist->szFullPath, MAX_PATH, proc->szFullPath, _TRUNCATE);
+                    hist->bPathCached = TRUE;
                 }
             }
 
@@ -4484,18 +4866,39 @@ void RefreshProcessList(void) {
             }
 
             proc->priorityClass = GetPriorityClass(hProcess);
-            GetProcessCommandLine(hProcess, proc->szCmdLine, sizeof(proc->szCmdLine) / sizeof(WCHAR));
+
+            // Ligne de commande (mise en cache pour éviter ReadProcessMemory/NtQuery répétés)
+            if (hist && hist->bCmdLineCached) {
+                wcsncpy_s(proc->szCmdLine, 1024, hist->szCmdLine, _TRUNCATE);
+            } else {
+                GetProcessCommandLine(hProcess, proc->szCmdLine, sizeof(proc->szCmdLine) / sizeof(WCHAR));
+                if (hist) {
+                    hist->cmdLineAttempts++;
+                    if (proc->szCmdLine[0] != L'\0' || hist->cmdLineAttempts >= 2) {
+                        wcsncpy_s(hist->szCmdLine, 1024, proc->szCmdLine, _TRUNCATE);
+                        hist->bCmdLineCached = TRUE;
+                    }
+                }
+            }
 
             CloseHandle(hProcess);
         } else {
             wcsncpy_s(proc->szCmdLine, 1024, GetResString(IDS_STR_RESTRICTED), _TRUNCATE);
         }
 
-        // GPU % réel (issu des compteurs WDDM PDH, indépendant des droits OpenProcess)
-        proc->gpuPercent = LookupCachedGpuPercent(pid);
+        // GPU % réel (issu du snapshot asynchrone WDDM PDH)
+        proc->gpuPercent = LookupGpuPercentSnapshot(pid, s_GpuSnapshot, gpuSnapCount);
 
-        // Détection de processus Windows de base
-        proc->isWindowsBase = IsWindowsBaseProcess(pid, proc->szName, proc->szFullPath);
+        // Détection de processus Windows de base (mise en cache pour éviter les I/O GetFileVersionInfoW chaque seconde)
+        if (hist && hist->bWinBaseCached) {
+            proc->isWindowsBase = hist->isWindowsBase;
+        } else {
+            proc->isWindowsBase = IsWindowsBaseProcess(pid, proc->szName, proc->szFullPath);
+            if (hist) {
+                hist->isWindowsBase = proc->isWindowsBase;
+                hist->bWinBaseCached = TRUE;
+            }
+        }
 
         if (hist) {
             hist->timestamp = curTick;
@@ -4506,7 +4909,6 @@ void RefreshProcessList(void) {
     PruneHistory(activePids, activeCount);
 
     // GPU global réel : utilisation maximale parmi les moteurs matériels actifs (conforme au Gestionnaire Windows)
-    double totalGpuPercent = g_CachedTotalGpuPct;
     if (totalGpuPercent < 0.0) totalGpuPercent = 0.0;
     if (totalGpuPercent > 100.0) totalGpuPercent = 100.0;
 
@@ -4521,7 +4923,7 @@ void RefreshProcessList(void) {
         totalRamGb = (double)memStatus.ullTotalPhys / (1024.0 * 1024.0 * 1024.0);
     }
 
-    // Mise à jour des 3 icônes d'historique (CPU, RAM, GPU) dans la barre des tâches
+    // Mise à jour asynchrone des 3 icônes d'historique (CPU, RAM, GPU) dans la barre des tâches
     UpdateTrayIcons(totalCpuPercent, memPercent, totalGpuPercent, usedRamGb, totalRamGb);
 
     // 1. Détection du top consommateur pour CPU, RAM et GPU à cette seconde précise
@@ -4593,6 +4995,10 @@ void RefreshProcessList(void) {
         wcsncpy_s(g_TopGpuHistory[PERF_HISTORY_POINTS - 1].szName, 32, top1Gpu.szName, _TRUNCATE);
         g_TopGpuHistory[PERF_HISTORY_POINTS - 1].pid = top1Gpu.pid;
         g_TopGpuHistory[PERF_HISTORY_POINTS - 1].usage = (float)(top1Gpu.value > 0.0 ? top1Gpu.value : 0.0);
+    }
+
+    if (g_bInTray || (g_hMainWnd && !IsWindowVisible(g_hMainWnd))) {
+        return;
     }
 
     if (g_hGraphBanner && IsWindow(g_hGraphBanner)) {

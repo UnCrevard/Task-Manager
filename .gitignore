@@ -5,6 +5,7 @@
 /package.json
 /tsconfig.json
 /vite.config.ts
+
 /settings.ini
 /.vscode/
 *.o
